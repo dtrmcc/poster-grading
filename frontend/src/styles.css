@@ -77,3 +77,67 @@ main {
   display: flex; justify-content: space-between; align-items: baseline;
 }
 .big { font-size: 26px; font-weight: 700; }
+
+/* ---------- stage 2 ---------- */
+button {
+  font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+.nav { display: flex; align-items: center; gap: 6px; }
+.nav select { min-width: 300px; }
+.nav button { font-size: 16px; line-height: 1; padding: 4px 10px; }
+
+.save { font-size: 12px; color: var(--muted); }
+.save.pending, .save.saving { color: var(--warn); }
+.save.error { color: var(--danger); font-weight: 600; }
+.error { cursor: pointer; }
+.error.inline { border-radius: 6px; cursor: default; }
+
+/* Poster viewer */
+.pane.poster { padding: 0; display: flex; flex-direction: column; }
+.viewer { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.viewer-bar {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.viewer-bar a { color: var(--accent); text-decoration: none; }
+.viewer-pages {
+  flex: 1; min-height: 0; overflow: auto; padding: 12px; background: var(--bg);
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.viewer-pages.fit-page img { height: 100%; width: auto; object-fit: contain; }
+.viewer-pages img { display: block; box-shadow: 0 1px 6px rgba(0,0,0,.15); background: #fff; }
+.placeholder button { margin-top: 10px; }
+.placeholder.small { font-size: 14px; }
+
+.student-head { display: flex; align-items: baseline; gap: 12px; }
+.student-head h1 { margin: 0; font-size: 20px; }
+
+.dim input.invalid { border-color: var(--danger); color: var(--danger); }
+.descriptor.bad { color: var(--danger); }
+
+/* Import dialog */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.35);
+  display: flex; align-items: center; justify-content: center; z-index: 10;
+}
+.modal {
+  background: var(--panel); border-radius: 10px; padding: 20px 22px; width: 560px; max-width: 92vw;
+  display: flex; flex-direction: column; gap: 14px; box-shadow: 0 10px 40px rgba(0,0,0,.25);
+}
+.modal h2 { margin: 0; font-size: 18px; }
+.modal .row { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+.dropzone {
+  border: 2px dashed var(--border); border-radius: 8px; padding: 32px 16px; text-align: center;
+  cursor: pointer; display: flex; flex-direction: column; gap: 6px; color: var(--text);
+}
+.dropzone small { color: var(--muted); }
+.dropzone.drag, .dropzone:hover { border-color: var(--accent); }
+.import-result { font-size: 14px; }
+.import-result ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }

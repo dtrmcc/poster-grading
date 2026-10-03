@@ -1,6 +1,6 @@
 # Poster Grading — Design
 
-Status: v0.1 (stage 0/1), 2026-10-03. Owner: Chen Qinghua (NIE/NTU).
+Status: v0.2 (stage 2 in progress), 2026-10-03. Owner: Chen Qinghua (NIE/NTU).
 
 ## 1. Purpose
 
@@ -68,6 +68,11 @@ The pseudonym map is stored only in the local database.
 ## 5. Inputs
 
 ### 5.1 Poster submissions
+Imported through the browser ("Import posters": pick a group, drop the PDFs). Each PDF is
+copied into `./data`, rendered to page images (long side 3200 px) and its text extracted.
+Re-importing an identical file is a no-op; a changed file for the same student replaces the
+poster and keeps the assessment. Pseudonyms are assigned once and never change.
+
 PDFs exported from the LMS, one per student, filename pattern:
 
 ```
@@ -151,8 +156,11 @@ Both providers use the OpenAI-compatible chat API, so switching is a base-URL ch
 - `student` — id, assignment, group, full name, other names, matric no., pseudonym
 - `submission` — student, file path, sha256, extracted text, page images
 - `presentation_note` — student, block index, raw text, edited text
-- `assessment` — student, instructor comment, status, override letter + reason
-- `mark` — assessment, dimension, ai_mark, ai_rationale, final_mark, updated_at
+- `assessment` — student, presentation note, instructor comment, final marks (JSON
+  `{dimension: "4.25"}`), override letter + reason. Status is derived
+  (`not_started` / `in_progress` / `marked`).
+- AI suggestions (per dimension: mark, rationale, evidence) will be stored alongside the final
+  marks when mark suggestion is added, so AI-vs-final can be compared.
 - `reference` — submission, raw string, parsed fields, verdict, matched record
 - `feedback` — assessment, version, ai_draft, final_text, approved_at
 - `export` — feedback, pdf path, created_at
@@ -174,9 +182,12 @@ docker-compose.yml  local deployment (127.0.0.1 only)
 
 - **Stage 0** — design, rubric config ✅
 - **Stage 1** — repository skeleton, scoring engine with tests, three-column UI shell ✅
-- **Stage 2** — MVP: import (roster, pseudonyms, posters, note splitting + matching),
-  persistence, poster viewer, AI mark suggestion via gateway, feedback drafting and
-  editing, PDF export and archive
+- **Stage 2** — MVP
+  - 2.1 import posters (roster from filenames, pseudonyms, page rendering, text) ✅
+  - 2.2 grading screen: poster viewer, student navigation, autosave ✅
+  - 2.3 presentation-note import: split into blocks, match to students
+  - 2.4 AI mark suggestion via the de-identification gateway
+  - 2.5 feedback drafting and editing; PDF export and archive
 - **Stage 3** — reference checking; local-model de-identification sweep; image redaction
 - **Stage 4** — run on the Mac as the daily tool; encrypted B2 backup/restore scripts
 - Later — other assignment types (essays, reports), multi-marker support, VPS deployment

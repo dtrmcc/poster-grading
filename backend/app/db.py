@@ -57,6 +57,39 @@ class Assessment(Base):
     student: Mapped[Student] = relationship(back_populates="assessment")
 
 
+class NoteImport(Base):
+    """One uploaded presentation-note file for a group. Re-importing replaces it."""
+    __tablename__ = "note_import"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    assignment_id: Mapped[str] = mapped_column(String(100), index=True)
+    group: Mapped[str] = mapped_column(String(20))
+    filename: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    imported_at: Mapped[datetime] = mapped_column(default=utcnow)
+    applied_at: Mapped[Optional[datetime]] = mapped_column()
+
+    blocks: Mapped[list["NoteBlock"]] = relationship(
+        back_populates="note_import", cascade="all, delete-orphan", order_by="NoteBlock.position"
+    )
+
+
+class NoteBlock(Base):
+    __tablename__ = "note_block"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    import_id: Mapped[int] = mapped_column(ForeignKey("note_import.id"), index=True)
+    position: Mapped[int] = mapped_column()
+    text: Mapped[str] = mapped_column(Text)
+    suggested_student_id: Mapped[Optional[int]] = mapped_column(ForeignKey("student.id"))
+    suggestion_score: Mapped[Optional[float]] = mapped_column()
+    suggestion_confident: Mapped[bool] = mapped_column(default=False)
+    student_id: Mapped[Optional[int]] = mapped_column(ForeignKey("student.id"))
+    ignored: Mapped[bool] = mapped_column(default=False)
+
+    note_import: Mapped[NoteImport] = relationship(back_populates="blocks")
+
+
 class Database:
     def __init__(self, data_dir: Path):
         data_dir.mkdir(parents=True, exist_ok=True)

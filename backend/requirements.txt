@@ -8,3 +8,4 @@ httpx==0.28.*
 SQLAlchemy==2.*
 PyMuPDF==1.*
 python-multipart==0.*
+python-docx==1.*

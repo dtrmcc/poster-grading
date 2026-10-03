@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, STATUS_DOT, STATUS_LABEL } from "./api.js";
 import ImportDialog from "./ImportDialog.jsx";
+import NotesDialog from "./NotesDialog.jsx";
 import PosterViewer from "./PosterViewer.jsx";
 
 const band = (letter) => (letter ? letter[0] : null); // "A-" -> "A"
@@ -33,6 +34,8 @@ export default function App() {
   const [saveState, setSaveState] = useState("saved"); // saved | pending | saving | error
   const [error, setError] = useState("");
   const [showImport, setShowImport] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const timer = useRef(null);
   const pending = useRef(null);  // {id, payload}
 
@@ -121,7 +124,7 @@ export default function App() {
       setError("");
     })().catch((e) => setError(e.message));
     return () => { cancelled = true; };
-  }, [currentId, flush]);
+  }, [currentId, flush, reloadKey]);
 
   const go = useCallback((delta) => {
     if (!visible.length) return;
@@ -132,13 +135,13 @@ export default function App() {
   useEffect(() => {
     const onKey = (e) => {
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
-      if (typing || showImport || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (typing || showImport || showNotes || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "ArrowRight" || e.key === "j") { e.preventDefault(); go(1); }
       if (e.key === "ArrowLeft" || e.key === "k") { e.preventDefault(); go(-1); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, showImport]);
+  }, [go, showImport, showNotes]);
 
   useEffect(() => {
     const warn = (e) => { if (pending.current) { flush(); e.preventDefault(); } };
@@ -200,6 +203,9 @@ export default function App() {
           {{ saved: "Saved", pending: "Unsaved…", saving: "Saving…", error: "Not saved" }[saveState]}
         </span>
         {assignment && <button onClick={() => setShowImport(true)}>Import posters</button>}
+        {assignment && students.length > 0 && (
+          <button onClick={async () => { await flush(); setShowNotes(true); }}>Presentation notes</button>
+        )}
         {health && (
           <span className={`pill ${health.together_configured ? "ok" : "warn"}`}>
             Together API {health.together_configured ? "configured" : "not configured"}
@@ -292,6 +298,19 @@ export default function App() {
           )}
         </section>
       </main>
+
+      {showNotes && assignment && (
+        <NotesDialog
+          assignment={assignment}
+          students={students}
+          initialGroup={groupFilter !== "all" ? groupFilter : student?.group}
+          onClose={() => setShowNotes(false)}
+          onApplied={async () => {
+            await loadStudents(assignment.assignment.id);
+            setReloadKey((k) => k + 1);
+          }}
+        />
+      )}
 
       {showImport && assignment && (
         <ImportDialog

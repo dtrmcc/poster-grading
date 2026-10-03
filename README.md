@@ -20,8 +20,10 @@ Open <http://127.0.0.1:5173>. The backend API is at <http://127.0.0.1:8000/api/h
 
 1. **Import posters** (top right): choose the group, drop that group's PDF submissions.
    Non-submission files such as `Rubric.pdf` are skipped.
-2. Move between students with **← / →** (when not typing) or the student menu.
-3. Notes, comments and marks save automatically ("Saved" in the header).
+2. **Presentation notes**: upload the group's note (Word), check the suggested student for
+   each block, then *Apply to students*.
+3. Move between students with **← / →** (when not typing) or the student menu.
+4. Notes, comments and marks save automatically ("Saved" in the header).
 
 ## Run tests
 

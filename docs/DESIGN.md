@@ -94,10 +94,13 @@ presentations:
   (e.g. `0327`, `3:49`), and absences are noted (e.g. "Medical leave").
 - Notes mix delivery observations with remarks on the poster/content.
 
-Import flow: split the file into ordered blocks → the instructor matches blocks to
-students in a side-by-side view (drag or pick; presentation order can be pre-filled if
-an order list is supplied) → each block becomes that student's presentation note,
-editable afterwards.
+Import flow ("Presentation notes" button): upload the group's Word file → it is split
+into ordered blocks → each block gets a *suggested* student, computed locally from words
+shared with the student's poster text (IDF-weighted overlap, one-to-one greedy assignment;
+no AI, nothing leaves the Mac) → the instructor confirms or changes each match, can tick
+blocks to ignore (absences are pre-ticked), and applies. A student may receive more than
+one block (joined). Applying never overwrites a note the instructor has edited unless
+"overwrite" is ticked. The matching is saved and can be reopened; re-uploading replaces it.
 
 ## 6. Workflow (per student)
 
@@ -185,7 +188,7 @@ docker-compose.yml  local deployment (127.0.0.1 only)
 - **Stage 2** — MVP
   - 2.1 import posters (roster from filenames, pseudonyms, page rendering, text) ✅
   - 2.2 grading screen: poster viewer, student navigation, autosave ✅
-  - 2.3 presentation-note import: split into blocks, match to students
+  - 2.3 presentation-note import: split into blocks, local match suggestions, apply ✅
   - 2.4 AI mark suggestion via the de-identification gateway
   - 2.5 feedback drafting and editing; PDF export and archive
 - **Stage 3** — reference checking; local-model de-identification sweep; image redaction

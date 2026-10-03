@@ -82,21 +82,22 @@ export default function App() {
           </div>
         </section>
 
-        <section className="pane notes">
-          <label>
-            Presentation note
-            <textarea value={note} onChange={(e) => setNote(e.target.value)}
-              placeholder="Imported automatically from the class note in stage 2" />
-          </label>
-          <label>
-            My comments
-            <textarea value={comment} onChange={(e) => setComment(e.target.value)}
-              placeholder="Short comments on the poster" />
-          </label>
+        <section className="pane side">
+          <div className="inputs">
+            <label>
+              Presentation note
+              <textarea value={note} onChange={(e) => setNote(e.target.value)}
+                placeholder="Imported automatically from the class note in stage 2" />
+            </label>
+            <label>
+              My comments
+              <textarea value={comment} onChange={(e) => setComment(e.target.value)}
+                placeholder="Short comments on the poster" />
+            </label>
+          </div>
           <p className="hint">Not saved yet — persistence arrives in stage 2.</p>
-        </section>
 
-        <section className="pane scoring">
+          <div className="scoring">
           <h2>Scoring</h2>
           {assignment?.dimensions.map((d) => {
             const s = dimScore(d.id);
@@ -136,6 +137,7 @@ export default function App() {
               </div>
             </div>
           )}
+          </div>
         </section>
       </main>
     </div>

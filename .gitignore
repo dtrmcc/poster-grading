@@ -1,0 +1,26 @@
+# ---- Secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Student data: NEVER commit ----
+data/
+uploads/
+exports/
+*.pdf
+*.docx
+*.sqlite
+*.sqlite3
+*.db
+!docs/**/*.pdf
+
+# ---- Build / tooling ----
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.DS_Store
+.vscode/
+.idea/

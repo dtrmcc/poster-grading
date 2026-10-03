@@ -1,0 +1,188 @@
+# Poster Grading — Design
+
+Status: v0.1 (stage 0/1), 2026-10-03. Owner: Chen Qinghua (NIE/NTU).
+
+## 1. Purpose
+
+A local, single-user tool that makes grading student work faster and more consistent
+without taking the judgement away from the instructor. First use: ALS10A Assignment 1
+(academic poster + in-class presentation), groups TG03 and TG06. Built so that new
+assignments are added by writing a config file, not by changing code.
+
+## 2. Principles
+
+1. **The instructor decides.** AI only suggests. Every mark and every sentence of
+   student feedback is confirmed or edited by the instructor before it is final.
+   AI suggestions and final decisions are both stored, so they can be compared later.
+2. **Identifiable student data never leaves the Mac.** Only de-identified content is
+   sent to external AI (Together AI). This is the compliance boundary under NTU/NIE
+   policy and is enforced in code, not left to habit (see §4).
+3. **Assignments are configuration.** Rubric, weights, mark allocation, grade bands and
+   feedback structure live in `config/assignments/*.yaml`.
+4. **Local first, portable.** Runs on the instructor's Mac via Docker Compose. The same
+   code can be deployed to a VPS later without changes.
+
+## 3. Architecture
+
+```
+ Browser (wide screen, 127.0.0.1 only)
+   │
+   ▼
+ frontend  (React + Vite)          backend (FastAPI, Python)
+   └── /api ─────────────────────▶  ├─ rubric + scoring        (config/assignments/*.yaml)
+                                    ├─ importer                (poster PDFs, presentation notes)
+                                    ├─ de-identification gate  ──▶ local model (Ollama on Mac)
+                                    ├─ AI gateway  ─────────────▶ Together AI   (de-identified only)
+                                    ├─ reference checker  ──────▶ Crossref / OpenAlex (citation metadata only)
+                                    ├─ feedback + PDF export   (WeasyPrint or headless Chrome)
+                                    └─ storage: SQLite + files in ./data   ──▶ B2 encrypted backup (stage 4)
+```
+
+All ports bind to `127.0.0.1`. `./data` is git-ignored and never leaves the machine
+except as an encrypted backup.
+
+## 4. The de-identification boundary
+
+Every external AI call goes through **one** module (`ai_gateway`). It refuses to send
+anything that has not passed the de-identification gate.
+
+1. **Roster-based replacement.** The roster (full name, English/Chinese names, given
+   names, matriculation number) is built at import time from submission filenames.
+   Every occurrence is replaced with a stable pseudonym (`S01`, `S02`, …). Matric
+   numbers are also caught by pattern (`U\d{7}[A-Z]`).
+2. **Local model sweep.** A local model scans the replaced text for remaining
+   identifiers (other names, schools, personal details) and flags them for review.
+3. **Images.** Poster pages are rendered locally; the regions containing names/matric
+   numbers are located (PDF text positions, OCR fallback) and blacked out before any
+   image is sent. The redacted image is shown to the instructor.
+4. **Send confirmation.** With `REQUIRE_SEND_CONFIRMATION=true` the exact outbound
+   payload is shown and must be approved. Can be relaxed to "only when the local sweep
+   flags something".
+5. **Send log.** Each external call is logged locally: timestamp, task, provider, model,
+   payload hash and the payload itself.
+6. **Re-identification happens locally.** Responses refer to `S07`; names are restored
+   only on the Mac.
+
+The pseudonym map is stored only in the local database.
+
+## 5. Inputs
+
+### 5.1 Poster submissions
+PDFs exported from the LMS, one per student, filename pattern:
+
+```
+NIE <FULL NAME IN CAPS>[ (<OTHER NAME>)]_<student's own filename>_Submitted file_trn-oid---<id>.pdf
+```
+
+The importer parses the name from the prefix and the submission id from the suffix.
+The student's own filename part sometimes contains a matric number; it is treated as
+identifying data.
+
+### 5.2 Presentation notes
+One Word file per group (e.g. `TG03 Presentation Note.docx`), written live during the
+presentations:
+
+- Each **top-level list item (level 0) starts a new student**, in presentation order.
+  Sub-items (levels 1–2) belong to that student. A few blocks start with plain
+  paragraphs instead of a list item; the splitter must tolerate this.
+- Students are **not named** in the file. Some blocks include a talk duration
+  (e.g. `0327`, `3:49`), and absences are noted (e.g. "Medical leave").
+- Notes mix delivery observations with remarks on the poster/content.
+
+Import flow: split the file into ordered blocks → the instructor matches blocks to
+students in a side-by-side view (drag or pick; presentation order can be pre-filled if
+an order list is supplied) → each block becomes that student's presentation note,
+editable afterwards.
+
+## 6. Workflow (per student)
+
+1. Open student → poster on the left, presentation note + own comments in the middle,
+   scoring on the right.
+2. Write short comments (poster).
+3. **Suggest** → AI proposes marks per dimension, each with a one-line rationale and
+   the evidence it relied on (de-identified inputs only).
+4. Instructor accepts/edits each mark → total, percentage and letter grade update live.
+   The final letter can be overridden with a written reason.
+5. **Draft feedback** → AI writes two sections: *poster* (from comments + poster) and
+   *presentation* (from the note). Rubric and per-dimension grades are attached.
+6. Instructor edits and approves → PDF generated, archived in `./data/exports/`,
+   downloadable. Batch export as a zip per group.
+
+Status per student: `not started → suggested → marks confirmed → feedback approved → exported`.
+
+## 7. Scoring (current assignment)
+
+Defined in `config/assignments/als10a-2026-poster.yaml`.
+
+| Dimension | Weight | Max marks | Evidence | Feedback section |
+|---|---|---|---|---|
+| Presentation delivery | 20% | 6 | presentation note | presentation |
+| Understanding of the topic (from the poster: coherence, consistency, no contradictions) | 15% | 4.5 | poster, comments | poster |
+| Integration of literature | 20% | 6 | poster, reference check, comments | poster |
+| Citations and examples | 15% | 4.5 | poster, reference check, comments | poster |
+| Analysis (rigour of reasoning; most posters are proposals) | 15% | 4.5 | poster, comments | poster |
+| Poster design | 15% | 4.5 | poster image, comments | poster |
+
+- Marks are entered per dimension in steps of 0.25; total out of 30 is submitted.
+- Letter grade from total %: rounded half-up to an integer, then 5-point bands
+  (A+ ≥95, A ≥90, A- ≥85, B+ ≥80 … D ≥50, F <50). Per-dimension letters are derived
+  the same way and used only to show the matching rubric descriptor.
+- Students see letter grades; marks are kept for the instructor's records
+  (`show_marks_to_student: false`).
+
+## 8. AI tasks and routing
+
+Each task can be routed to `local`, `together` or `off` in `.env`.
+
+| Task | Default | Notes |
+|---|---|---|
+| De-identification sweep | local | after roster-based replacement |
+| Reference extraction (to structured fields) | local | errors are caught by the Crossref lookup |
+| Reference verification | no LLM for lookup | Crossref/OpenAlex/URL check; LLM compares metadata |
+| Mark suggestion | together | structured JSON output: mark, rationale, evidence |
+| Poster design review | together | redacted image only |
+| Feedback drafting | together | English, student-facing tone |
+
+Both providers use the OpenAI-compatible chat API, so switching is a base-URL change.
+
+## 9. Data model (SQLite)
+
+- `assignment` — id, config path, config hash
+- `student` — id, assignment, group, full name, other names, matric no., pseudonym
+- `submission` — student, file path, sha256, extracted text, page images
+- `presentation_note` — student, block index, raw text, edited text
+- `assessment` — student, instructor comment, status, override letter + reason
+- `mark` — assessment, dimension, ai_mark, ai_rationale, final_mark, updated_at
+- `reference` — submission, raw string, parsed fields, verdict, matched record
+- `feedback` — assessment, version, ai_draft, final_text, approved_at
+- `export` — feedback, pdf path, created_at
+- `send_log` — task, provider, model, payload, payload_sha256, response, created_at
+
+## 10. Repository layout
+
+```
+backend/            FastAPI app (app/), tests (tests/), Dockerfile
+frontend/           React + Vite app, Dockerfile
+config/assignments/ one YAML per assignment
+docs/               this document
+data/               runtime data — git-ignored, never committed
+docker-compose.yml  local deployment (127.0.0.1 only)
+.env.example        settings template; copy to .env
+```
+
+## 11. Roadmap
+
+- **Stage 0** — design, rubric config ✅
+- **Stage 1** — repository skeleton, scoring engine with tests, three-column UI shell ✅
+- **Stage 2** — MVP: import (roster, pseudonyms, posters, note splitting + matching),
+  persistence, poster viewer, AI mark suggestion via gateway, feedback drafting and
+  editing, PDF export and archive
+- **Stage 3** — reference checking; local-model de-identification sweep; image redaction
+- **Stage 4** — run on the Mac as the daily tool; encrypted B2 backup/restore scripts
+- Later — other assignment types (essays, reports), multi-marker support, VPS deployment
+
+## 12. Open items
+
+- Choose Together text and vision models (check current model list and pricing).
+- Choose local model(s) for Ollama on the M4 / 32 GB MacBook Air.
+- PDF engine: WeasyPrint (light) vs headless Chrome (higher fidelity) — decide in stage 2.

@@ -1,0 +1,144 @@
+# ALS10A Assignment 1 — Academic Poster Presentation
+# Shared by TG03 and TG06. Draft config for the grading platform (v0.2, 2026-10-03).
+
+assignment:
+  id: als10a-2026-poster
+  course: ALS10A
+  title: Assessment Criteria for Poster Presentation
+  groups: [TG03, TG06]
+  weight_in_course: 30        # % of final course grade
+  max_marks: 30               # sum of dimension max_marks
+
+# ---------------------------------------------------------------
+# Scoring: the 30 marks are split across dimensions by weight.
+# Each dimension is scored directly in marks (step 0.25).
+# Total marks → % (total / 30 × 100, rounded) → letter grade.
+# Per-dimension letters are derived the same way (marks / max), for display only.
+# ---------------------------------------------------------------
+scoring:
+  mark_step: 0.25
+  rounding: nearest_integer   # 94.5% → 95 → A+
+
+grade_scale:                  # % thresholds, 5-point bands
+  - { letter: "A+", min: 95 }
+  - { letter: "A",  min: 90 }
+  - { letter: "A-", min: 85 }
+  - { letter: "B+", min: 80 }
+  - { letter: "B",  min: 75 }
+  - { letter: "B-", min: 70 }
+  - { letter: "C+", min: 65 }
+  - { letter: "C",  min: 60 }
+  - { letter: "D+", min: 55 }
+  - { letter: "D",  min: 50 }
+  - { letter: "F",  min: 0 }
+
+# Instructor may override the final letter; a written reason is required and logged.
+override:
+  allowed: true
+  reason_required: true
+
+# ---------------------------------------------------------------
+# Dimensions. Descriptors are quoted from the course rubric, per band.
+# evidence = which inputs the AI may draw on when suggesting a grade.
+# feedback_section = which part of the student feedback this feeds.
+# ---------------------------------------------------------------
+dimensions:
+  - id: delivery
+    name: Presentation delivery
+    weight: 20
+    max_marks: 6
+    evidence: [presentation_note]
+    feedback_section: presentation
+    descriptors:
+      A: "A well-prepared, engaging, and structured presentation."
+      B: "A reasonably clear presentation."
+      C: "An average presentation."
+      D: "A poorly prepared presentation."
+      F: "A very poorly prepared presentation."
+
+  - id: understanding
+    name: Understanding of the research topic
+    weight: 15
+    max_marks: 4.5
+    evidence: [poster, instructor_comment]
+    feedback_section: poster
+    guidance: >
+      Judge from the poster only (not the Q&A): does the poster demonstrate
+      understanding of the topic? Look for logical coherence across sections,
+      consistency between research question, rationale and design, and any
+      confusion or contradictions.
+    descriptors:
+      A: "Shows a deep understanding of the research topic."
+      B: "Shows a reasonable understanding of the research topic."
+      C: "Shows some understanding of the research topic."
+      D: "Shows some sporadic understanding of the research topic."
+      F: "Shows little understanding of the research topic. Lack of understanding of research discourse is apparent."
+
+  - id: literature
+    name: Integration of literature
+    weight: 20
+    max_marks: 6
+    evidence: [poster, reference_check, instructor_comment]
+    feedback_section: poster
+    descriptors:
+      A: "The argument demonstrates a comprehensive integration of relevant literature and scholarly sources."
+      B: "The argument demonstrates a good integration of relevant literature and scholarly sources."
+      C: "The argument demonstrates some integration of relevant literature and scholarly sources in parts."
+      D: "The argument demonstrates minimal integration of relevant literature and scholarly sources in only one or two parts."
+      F: "No review of literature appears to have been carried out."
+
+  - id: citations_examples
+    name: Citations and examples
+    weight: 15
+    max_marks: 4.5
+    evidence: [poster, reference_check, instructor_comment]
+    feedback_section: poster
+    descriptors:
+      A: "Citations and examples are not only purposeful and practical but also seamlessly integrated to support the argument."
+      B: "The examples presented are relevant and sufficient."
+      C: "The examples presented are generally relevant, but they could have been more carefully chosen."
+      D: "The examples presented are irrelevant at places and insufficient."
+      F: "Irrelevant and insufficient examples."
+
+  - id: analysis
+    name: Analysis
+    weight: 15
+    max_marks: 4.5
+    evidence: [poster, instructor_comment]
+    feedback_section: poster
+    guidance: >
+      Most posters are research proposals without data. Interpret "analysis" as
+      the rigour of the reasoning: how systematically and accurately the research
+      question, methods and argument fit together.
+    descriptors:
+      A: "Analysis is highly systematic and accurate."
+      B: "Analysis is generally systematic and accurate, but with the occasional minor lapse."
+      C: "Analysis is somewhat systematic and accurate, but it contains several major lapses."
+      D: "Analysis is frequently inaccurate or is incomplete."
+      F: null   # no separate descriptor in the rubric; use instructor judgement
+
+  - id: design
+    name: Poster design
+    weight: 15
+    max_marks: 4.5
+    evidence: [poster_image, instructor_comment]
+    feedback_section: poster
+    descriptors:
+      A: "The poster is exceptionally well-organized and visually appealing. It effectively integrates text, images, graphs, and other multimedia elements to enhance understanding and engagement."
+      B: "The poster is well-organized and visually appealing, with effective use of text, images, graphs, and other multimedia elements."
+      C: "The poster is adequately organized and visually acceptable, using text, images, graphs, and other multimedia elements to present information."
+      D: "The poster lacks clear organization and is visually cluttered or with unappealing and ineffective use of text, images, graphs or other multimedia elements."
+      F: "The poster is disorganized and visually unattractive, making it difficult to understand or engage with the content."
+
+# Feedback document structure
+feedback:
+  sections:
+    - id: poster
+      title: Feedback on your poster
+      sources: [instructor_comment, poster]
+    - id: presentation
+      title: Feedback on your presentation
+      sources: [presentation_note]
+  include_rubric: true
+  include_dimension_grades: true
+  show_marks_to_student: false   # students see letter grades; marks kept for records

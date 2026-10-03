@@ -60,6 +60,8 @@ class FeedbackSection(BaseModel):
 
 
 class FeedbackSpec(BaseModel):
+    document_title: Optional[str] = None
+    signed_by: Optional[str] = None
     sections: list[FeedbackSection]
     include_rubric: bool = True
     include_dimension_grades: bool = True

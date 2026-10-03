@@ -111,6 +111,33 @@ class AIRequest(Base):
     sent_at: Mapped[Optional[datetime]] = mapped_column()
 
 
+class Feedback(Base):
+    """Current feedback text for a student (instructor-edited) and the last AI draft."""
+    __tablename__ = "feedback"
+
+    student_id: Mapped[int] = mapped_column(ForeignKey("student.id"), primary_key=True)
+    poster: Mapped[str] = mapped_column(Text, default="")
+    presentation: Mapped[str] = mapped_column(Text, default="")
+    ai_poster: Mapped[Optional[str]] = mapped_column(Text)
+    ai_presentation: Mapped[Optional[str]] = mapped_column(Text)
+    ai_request_id: Mapped[Optional[int]] = mapped_column(ForeignKey("ai_request.id"))
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class Export(Base):
+    """An archived feedback PDF. Every export is kept (versioned)."""
+    __tablename__ = "export"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("student.id"), index=True)
+    version: Mapped[int] = mapped_column()
+    path: Mapped[str] = mapped_column(Text)            # relative to DATA_DIR
+    sha256: Mapped[str] = mapped_column(String(64))
+    letter: Mapped[Optional[str]] = mapped_column(String(3))
+    total_marks: Mapped[Optional[str]] = mapped_column(String(10))
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
 class Database:
     def __init__(self, data_dir: Path):
         data_dir.mkdir(parents=True, exist_ok=True)

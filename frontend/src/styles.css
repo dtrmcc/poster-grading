@@ -189,3 +189,35 @@ button.link { border: none; background: none; color: var(--accent); padding: 0 4
   border-left: 3px solid var(--warn); padding: 6px 10px; border-radius: 4px; font-size: 13px;
 }
 details summary { cursor: pointer; font-size: 13px; }
+
+/* Tabs, feedback */
+.student-head .spacer { flex: 1; }
+.student-head { align-items: center; }
+.tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.tabs button { border: none; border-radius: 0; padding: 5px 14px; }
+.tabs button.on { background: var(--accent); color: #fff; }
+.grade-chip { font-weight: 700; font-size: 14px; color: var(--accent); }
+.feedback { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.feedback-bar { display: flex; align-items: center; gap: 10px; }
+.fb-section { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+.fb-title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.fb-section textarea {
+  flex: 1; min-height: 120px; resize: none; font: inherit; font-size: 14px; line-height: 1.5;
+  padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);
+}
+.exports { border-top: 1px solid var(--border); padding-top: 8px; font-size: 13px; }
+.exports ul { margin: 6px 0 0; padding-left: 18px; max-height: 90px; overflow: auto; }
+.exports a, .menu-items a { color: var(--accent); text-decoration: none; }
+.menu { position: relative; font-size: 13px; }
+.menu summary {
+  list-style: none; cursor: pointer; padding: 4px 10px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--panel);
+}
+.menu summary::-webkit-details-marker { display: none; }
+.menu-items {
+  position: absolute; right: 0; top: 32px; z-index: 5; background: var(--panel); min-width: 260px;
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15);
+  display: flex; flex-direction: column; padding: 6px;
+}
+.menu-items a { padding: 6px 8px; border-radius: 5px; }
+.menu-items a:hover { background: var(--bg); }

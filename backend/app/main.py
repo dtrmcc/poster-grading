@@ -1,5 +1,9 @@
+import csv
 import hashlib
+import io
 import json
+import re
+import zipfile
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
@@ -7,13 +11,15 @@ from typing import Optional
 
 import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import ai, deid, importer, notes
-from .db import AIRequest, Assessment, Database, NoteBlock, NoteImport, Student, utcnow
+from . import feedback as fb
+from .db import (AIRequest, Assessment, Database, Export, Feedback, NoteBlock, NoteImport,
+                 Student, utcnow)
 from .rubric import Assignment, ScoreResult, load_all
 from .settings import settings
 
@@ -153,10 +159,25 @@ async def import_submissions(
 
 # ---------------------------------------------------------------- students
 
+def _naive(dt):
+    return dt.replace(tzinfo=None) if dt else dt
+
+
+def _latest_export(st: Student) -> Optional[Export]:
+    s = Session.object_session(st)
+    return s.scalar(select(Export).where(Export.student_id == st.id).order_by(Export.id.desc()))
+
+
 def _status(a: Assignment, st: Student) -> str:
     asm = st.assessment
     marks = {k: v for k, v in (asm.marks or {}).items() if v not in (None, "")}
     if len(marks) == len(a.dimensions):
+        ex = _latest_export(st)
+        if ex:
+            f = Session.object_session(st).get(Feedback, st.id)
+            last_change = max(filter(None, [_naive(asm.updated_at), _naive(f.updated_at) if f else None]))
+            if _naive(ex.created_at) >= last_change:
+                return "exported"
         return "marked"
     if marks or asm.comment.strip() or asm.presentation_note.strip():
         return "in_progress"
@@ -445,11 +466,20 @@ def send_ai_request(request_id: int, s: Session = Depends(db)) -> dict:
     st = _load(req.student_id, s)
     a = _get(st.assignment_id)
     req.sent_at = utcnow()
+    schema = ai.SUGGEST_SCHEMA if req.task == "suggest_marks" else fb.FEEDBACK_SCHEMA
     try:
-        out = ai.call_chat(req.provider, req.model, req.payload["messages"], schema=ai.SUGGEST_SCHEMA)
+        out = ai.call_chat(req.provider, req.model, req.payload["messages"], schema=schema,
+                           max_tokens=2500 if req.task == "suggest_marks" else 3000)
         req.response_text = out["content"]
         req.usage = out["usage"]
-        dims = ai.validate_suggestion(a, ai.parse_json(out["content"]))
+        parsed = ai.parse_json(out["content"])
+        if req.task == "suggest_marks":
+            dims = ai.validate_suggestion(a, parsed)
+        else:
+            poster_fb = str(parsed.get("poster") or "").strip()
+            pres_fb = str(parsed.get("presentation") or "").strip()
+            if not poster_fb and not pres_fb:
+                raise ai.AIError("the model returned empty feedback")
     except ai.AIError as e:
         req.status, req.error = "failed", str(e)
         s.commit()
@@ -458,11 +488,21 @@ def send_ai_request(request_id: int, s: Session = Depends(db)) -> dict:
         req.status, req.error = "failed", f"network error: {e}"
         s.commit()
         raise HTTPException(502, f"could not reach {req.provider}: {e}")
-    d = _deidentifier(st.assignment_id, s)
-    for dim in dims:  # names come back only on this machine
-        dim["rationale"] = d.reidentify(dim["rationale"])
-        dim["evidence"] = [d.reidentify(e) for e in dim["evidence"]]
-    req.result = {"dimensions": dims}
+    d = _deidentifier(st.assignment_id, s)   # names come back only on this machine
+    if req.task == "suggest_marks":
+        for dim in dims:
+            dim["rationale"] = d.reidentify(dim["rationale"])
+            dim["evidence"] = [d.reidentify(e) for e in dim["evidence"]]
+        req.result = {"dimensions": dims}
+    else:
+        poster_fb, pres_fb = d.reidentify(poster_fb), d.reidentify(pres_fb)
+        req.result = {"poster": poster_fb, "presentation": pres_fb}
+        f = _feedback_row(st, s)
+        f.ai_poster, f.ai_presentation, f.ai_request_id = poster_fb, pres_fb, req.id
+        if not f.poster.strip():
+            f.poster = poster_fb
+        if not f.presentation.strip():
+            f.presentation = pres_fb
     req.status = "sent"
     s.commit()
     return _detail(st)
@@ -476,3 +516,174 @@ def ai_log(limit: int = 50, s: Session = Depends(db)) -> list[dict]:
              "created_at": r.created_at.isoformat(),
              "sent_at": r.sent_at.isoformat() if r.sent_at else None,
              "usage": r.usage, "error": r.error} for r in rows]
+
+
+# ---------------------------------------------------------------- feedback
+
+def _feedback_row(st: Student, s: Session) -> Feedback:
+    f = s.get(Feedback, st.id)
+    if not f:
+        f = Feedback(student_id=st.id, poster="", presentation="")
+        s.add(f)
+        s.flush()
+    return f
+
+
+def _complete_score(st: Student):
+    a = _get(st.assignment_id)
+    marks = {k: Decimal(v) for k, v in (st.assessment.marks or {}).items() if v not in (None, "")}
+    sc = a.score(marks)
+    if not sc.complete:
+        raise HTTPException(422, "enter marks for every criterion first")
+    return a, sc
+
+
+def _export_out(e: Export) -> dict:
+    return {"id": e.id, "version": e.version, "letter": e.letter, "total_marks": e.total_marks,
+            "created_at": e.created_at.isoformat(), "url": f"/api/exports/{e.id}/pdf"}
+
+
+def _feedback_out(st: Student, s: Session) -> dict:
+    f = s.get(Feedback, st.id)
+    exports = s.scalars(select(Export).where(Export.student_id == st.id).order_by(Export.id.desc())).all()
+    return {
+        "poster": f.poster if f else "", "presentation": f.presentation if f else "",
+        "ai_poster": f.ai_poster if f else None, "ai_presentation": f.ai_presentation if f else None,
+        "updated_at": f.updated_at.isoformat() if f and f.updated_at else None,
+        "exports": [_export_out(e) for e in exports],
+        "status": _status(_get(st.assignment_id), st),
+    }
+
+
+@app.get("/api/students/{student_id}/feedback")
+def get_feedback(student_id: int, s: Session = Depends(db)) -> dict:
+    return _feedback_out(_load(student_id, s), s)
+
+
+class FeedbackUpdate(BaseModel):
+    poster: Optional[str] = None
+    presentation: Optional[str] = None
+
+
+@app.put("/api/students/{student_id}/feedback")
+def update_feedback(student_id: int, upd: FeedbackUpdate, s: Session = Depends(db)) -> dict:
+    st = _load(student_id, s)
+    f = _feedback_row(st, s)
+    if upd.poster is not None:
+        f.poster = upd.poster
+    if upd.presentation is not None:
+        f.presentation = upd.presentation
+    s.commit()
+    return _feedback_out(st, s)
+
+
+@app.post("/api/students/{student_id}/ai/draft-feedback/preview")
+def preview_draft_feedback(student_id: int, s: Session = Depends(db)) -> dict:
+    st = _load(student_id, s)
+    a, sc = _complete_score(st)
+    provider = settings.ai_task_feedback_write
+    try:
+        _, _, model = ai.provider_config(provider)
+    except ai.AIError as e:
+        raise HTTPException(422, str(e))
+    d = _deidentifier(st.assignment_id, s)
+    poster = d.deidentify(st.text)
+    note = d.deidentify(st.assessment.presentation_note)
+    comment = d.deidentify(st.assessment.comment)
+    messages = fb.build_feedback_messages(a, sc, poster.text, note.text, comment.text)
+    blob = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+    warnings = []
+    if not st.assessment.comment.strip():
+        warnings.append("You have not written comments yet; the poster feedback will rely on the poster text only.")
+    if not st.assessment.presentation_note.strip():
+        warnings.append("No presentation note: the presentation section will be left empty.")
+    leftovers = d.residuals(blob)
+    if leftovers:
+        warnings.append("Possible name remnants after de-identification (check before sending): "
+                        + ", ".join(leftovers))
+    req = AIRequest(student_id=st.id, task="draft_feedback", provider=provider, model=model,
+                    payload={"messages": messages}, payload_sha256=hashlib.sha256(blob.encode()).hexdigest(),
+                    replacements=len(poster.replacements) + len(note.replacements) + len(comment.replacements))
+    s.add(req)
+    s.commit()
+    return {"request_id": req.id, "task": "draft_feedback", "provider": provider, "model": model,
+            "messages": messages, "replacements": req.replacements, "warnings": warnings,
+            "residuals": leftovers, "require_confirmation": settings.require_send_confirmation}
+
+
+def _safe(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9 ._-]+", "", name).strip().replace(" ", "_") or "student"
+
+
+@app.post("/api/students/{student_id}/export")
+def export_feedback(student_id: int, s: Session = Depends(db)) -> dict:
+    st = _load(student_id, s)
+    a, sc = _complete_score(st)
+    f = s.get(Feedback, st.id)
+    if not f or not (f.poster.strip() or f.presentation.strip()):
+        raise HTTPException(422, "write or draft the feedback first")
+    version = (s.scalar(select(func.max(Export.version)).where(Export.student_id == st.id)) or 0) + 1
+    now = utcnow()
+    rel = Path("exports") / st.assignment_id / st.group / f"{_safe(st.display_name)}_feedback_v{version}.pdf"
+    out = settings.data_dir / rel
+    body = fb.build_html(a, st.display_name, st.group, sc, f.poster, f.presentation, now.astimezone())
+    fb.render_pdf(body, out, footer=f"{a.assignment.course} · {st.display_name} · {st.group}")
+    e = Export(student_id=st.id, version=version, path=str(rel), sha256=importer.sha256(out.read_bytes()),
+               letter=sc.letter, total_marks=format(sc.total_marks.normalize(), "f"), created_at=now)
+    s.add(e)
+    s.commit()
+    return _feedback_out(st, s)
+
+
+@app.get("/api/exports/{export_id}/pdf")
+def get_export(export_id: int, download: bool = False, s: Session = Depends(db)) -> FileResponse:
+    e = s.get(Export, export_id)
+    if not e:
+        raise HTTPException(404, "export not found")
+    p = settings.data_dir / e.path
+    return FileResponse(p, media_type="application/pdf", filename=p.name,
+                        content_disposition_type="attachment" if download else "inline")
+
+
+@app.get("/api/assignments/{assignment_id}/exports.zip")
+def export_zip(assignment_id: str, group: Optional[str] = None, s: Session = Depends(db)) -> Response:
+    """Latest feedback PDF for every student (optionally one group)."""
+    _get(assignment_id)
+    q = select(Student).where(Student.assignment_id == assignment_id)
+    if group:
+        q = q.where(Student.group == group)
+    buf = io.BytesIO()
+    n = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for st in s.scalars(q.order_by(Student.group, Student.display_name)).all():
+            e = _latest_export(st)
+            if e and (settings.data_dir / e.path).exists():
+                z.write(settings.data_dir / e.path, f"{st.group}/{Path(e.path).name}")
+                n += 1
+    if not n:
+        raise HTTPException(404, "no feedback PDFs exported yet")
+    name = f"{assignment_id}_{group or 'all'}_feedback.zip"
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/assignments/{assignment_id}/marks.csv")
+def marks_csv(assignment_id: str, group: Optional[str] = None, s: Session = Depends(db)) -> Response:
+    a = _get(assignment_id)
+    q = select(Student).where(Student.assignment_id == assignment_id)
+    if group:
+        q = q.where(Student.group == group)
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["group", "name", "matric"] + [f"{d.name} (/{d.max_marks.normalize():f})" for d in a.dimensions]
+               + [f"total (/{a.assignment.max_marks.normalize():f})", "percent", "grade", "status"])
+    for st in s.scalars(q.order_by(Student.group, Student.display_name)).all():
+        marks = {k: Decimal(v) for k, v in (st.assessment.marks or {}).items() if v not in (None, "")}
+        sc = a.score(marks)
+        w.writerow([st.group, st.display_name, st.matric or ""]
+                   + [format(marks[d.id].normalize(), "f") if d.id in marks else "" for d in a.dimensions]
+                   + [format(sc.total_marks.normalize(), "f") if sc.complete else "",
+                      sc.rounded_percent if sc.complete else "", sc.letter or "", _status(a, st)])
+    name = f"{assignment_id}_{group or 'all'}_marks.csv"
+    return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})

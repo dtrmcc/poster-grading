@@ -1,6 +1,6 @@
 # Poster Grading — Design
 
-Status: v0.3 (stage 2 in progress), 2026-10-03. Owner: Chen Qinghua (NIE/NTU).
+Status: v0.4 (stage 2 complete), 2026-10-03. Owner: Chen Qinghua (NIE/NTU).
 
 ## 1. Purpose
 
@@ -169,8 +169,10 @@ Both providers use the OpenAI-compatible chat API, so switching is a base-URL ch
 - AI suggestions (per dimension: mark, rationale, evidence) will be stored alongside the final
   marks when mark suggestion is added, so AI-vs-final can be compared.
 - `reference` — submission, raw string, parsed fields, verdict, matched record
-- `feedback` — assessment, version, ai_draft, final_text, approved_at
-- `export` — feedback, pdf path, created_at
+- `feedback` — student, poster text, presentation text (instructor-edited), last AI draft of
+  each, ai_request, updated_at
+- `export` — student, version, pdf path (under DATA_DIR), sha256, letter, total, created_at.
+  A student counts as *exported* when the latest export is newer than any later edit.
 - `ai_request` (send log) — student, task, provider, model, payload (de-identified messages),
   payload_sha256, replacements, status (previewed/sent/failed), raw response, validated
   result, token usage, error, created_at, sent_at. The latest sent `suggest_marks`
@@ -199,8 +201,14 @@ docker-compose.yml  local deployment (127.0.0.1 only)
   - 2.4 AI mark suggestion via the de-identification gateway ✅
     (text only: poster design is suggested only from the instructor's comments until
     redacted poster images can be sent — stage 3)
-  - 2.5 feedback drafting and editing; PDF export and archive
-- **Stage 3** — reference checking; local-model de-identification sweep; image redaction
+  - 2.5 feedback drafting and editing; PDF export and archive ✅
+    (Feedback tab: AI draft of two sections through the same preview/send gateway, never
+    overwriting edited text; PDF built locally with PyMuPDF — grades by criterion with the
+    matching descriptor, both feedback sections, signature, full rubric on its own page with
+    the student's bands shaded; every export kept as a new version in
+    `data/exports/<assignment>/<group>/`; zip of latest PDFs and marks CSV per group)
+- **Stage 3** — poster-design review from redacted poster images (vision model);
+  reference checking; local-model de-identification sweep
 - **Stage 4** — run on the Mac as the daily tool; encrypted B2 backup/restore scripts
 - Later — other assignment types (essays, reports), multi-marker support, VPS deployment
 

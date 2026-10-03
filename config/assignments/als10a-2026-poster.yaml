@@ -132,6 +132,8 @@ dimensions:
 
 # Feedback document structure
 feedback:
+  document_title: "ALS10A Assignment 1 — Academic Poster: Feedback"
+  signed_by: "Dr Chen Qinghua"      # shown at the end of the feedback PDF
   sections:
     - id: poster
       title: Feedback on your poster

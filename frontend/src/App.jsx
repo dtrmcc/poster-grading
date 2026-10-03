@@ -3,6 +3,7 @@ import { api, STATUS_DOT, STATUS_LABEL } from "./api.js";
 import ImportDialog from "./ImportDialog.jsx";
 import NotesDialog from "./NotesDialog.jsx";
 import AIReviewDialog from "./AIReviewDialog.jsx";
+import FeedbackPanel from "./FeedbackPanel.jsx";
 import PosterViewer from "./PosterViewer.jsx";
 
 const band = (letter) => (letter ? letter[0] : null); // "A-" -> "A"
@@ -40,6 +41,8 @@ export default function App() {
   const [aiPreview, setAiPreview] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [tab, setTab] = useState("grading");      // grading | feedback
+  const [feedbackKey, setFeedbackKey] = useState(0);
   const timer = useRef(null);
   const pending = useRef(null);  // {id, payload}
 
@@ -169,18 +172,20 @@ export default function App() {
       const d = await api(`/ai/requests/${preview.request_id}/send`, { method: "POST" });
       setStudent((cur) => (cur && cur.id === d.id ? d : cur));
       setAiPreview(null);
+      if (preview.task === "draft_feedback") setFeedbackKey((k) => k + 1);
     } catch (e) {
       setAiError(e.message);
       if (!preview.require_confirmation) setAiPreview(preview);
     } finally { setAiBusy(false); }
   };
 
-  const requestAi = async () => {
+  const requestAi = async (kind = "marks") => {
     setError(""); setAiError("");
     await flush();
     setAiBusy(true);
     try {
-      const p = await api(`/students/${student.id}/ai/suggest-marks/preview`, { method: "POST" });
+      const path = kind === "feedback" ? "draft-feedback" : "suggest-marks";
+      const p = await api(`/students/${student.id}/ai/${path}/preview`, { method: "POST" });
       if (p.require_confirmation || p.residuals.length) setAiPreview(p);
       else await sendAi(p);
     } catch (e) { setError(e.message); }
@@ -197,7 +202,8 @@ export default function App() {
   const score = student?.score;
   const dimScore = (id) => score?.dimensions.find((d) => d.id === id);
   const counts = useMemo(() => ({
-    marked: visible.filter((s) => s.status === "marked").length,
+    marked: visible.filter((s) => s.status === "marked" || s.status === "exported").length,
+    exported: visible.filter((s) => s.status === "exported").length,
     total: visible.length,
   }), [visible]);
 
@@ -230,7 +236,7 @@ export default function App() {
               ))}
             </select>
             <button onClick={() => go(1)} disabled={index >= visible.length - 1} title="Next (→)">›</button>
-            <span className="muted">{counts.marked}/{counts.total} marked</span>
+            <span className="muted">{counts.marked}/{counts.total} marked · {counts.exported} exported</span>
           </div>
         )}
 
@@ -241,6 +247,21 @@ export default function App() {
         {assignment && <button onClick={() => setShowImport(true)}>Import posters</button>}
         {assignment && students.length > 0 && (
           <button onClick={async () => { await flush(); setShowNotes(true); }}>Presentation notes</button>
+        )}
+        {assignment && students.length > 0 && (
+          <details className="menu">
+            <summary>Export</summary>
+            <div className="menu-items">
+              {(() => {
+                const q = groupFilter !== "all" ? `?group=${groupFilter}` : "";
+                const scope = groupFilter !== "all" ? groupFilter : "all groups";
+                return (<>
+                  <a href={`/api/assignments/${assignment.assignment.id}/marks.csv${q}`}>Marks (CSV) — {scope}</a>
+                  <a href={`/api/assignments/${assignment.assignment.id}/exports.zip${q}`}>Feedback PDFs (zip) — {scope}</a>
+                </>);
+              })()}
+            </div>
+          </details>
         )}
         {health && (
           <span className={`pill ${health.together_configured ? "ok" : "warn"}`}>
@@ -270,7 +291,27 @@ export default function App() {
               <div className="student-head">
                 <h1>{student.name}</h1>
                 <span className="muted">{student.group} · {student.pseudonym} · {STATUS_LABEL[student.status]}</span>
+                <span className="spacer" />
+                {score?.complete && <span className="grade-chip">{score.letter} · {Number(score.total_marks)}/{Number(score.max_marks)}</span>}
+                <div className="tabs">
+                  <button className={tab === "grading" ? "on" : ""} onClick={() => setTab("grading")}>Grading</button>
+                  <button className={tab === "feedback" ? "on" : ""} onClick={async () => { await flush(); setTab("feedback"); }}>Feedback</button>
+                </div>
               </div>
+              {tab === "feedback" ? (
+                <FeedbackPanel
+                  student={student}
+                  marksComplete={!!score?.complete}
+                  aiAvailable={!!health?.together_configured}
+                  aiBusy={aiBusy}
+                  reloadKey={feedbackKey}
+                  onRequestDraft={() => requestAi("feedback")}
+                  onStatus={(id, status) => {
+                    setStudents((list) => list.map((x) => (x.id === id ? { ...x, status } : x)));
+                    setStudent((cur) => (cur && cur.id === id ? { ...cur, status } : cur));
+                  }}
+                />
+              ) : (<>
               <div className="inputs">
                 <label>
                   Presentation note
@@ -299,7 +340,7 @@ export default function App() {
                       <button onClick={() => useAi(assignment.dimensions.map((d) => d.id))}>Use all AI marks</button>
                     </>
                   )}
-                  <button className="ai" onClick={requestAi}
+                  <button className="ai" onClick={() => requestAi("marks")}
                     disabled={aiBusy || !health?.together_configured}
                     title={health?.together_configured ? "Suggest marks with AI (you review the request first)"
                       : "Add the Together API key and model to .env first"}>
@@ -355,6 +396,7 @@ export default function App() {
                   </div>
                 )}
               </div>
+              </>)}
             </>
           ) : (
             <div className="placeholder small">Select or import a student to start grading.</div>

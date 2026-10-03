@@ -15,6 +15,7 @@ export const STATUS_LABEL = {
   not_started: "Not started",
   in_progress: "In progress",
   marked: "Marked",
+  exported: "Feedback exported",
 };
 
-export const STATUS_DOT = { not_started: "○", in_progress: "◐", marked: "●" };
+export const STATUS_DOT = { not_started: "○", in_progress: "◐", marked: "●", exported: "✓" };

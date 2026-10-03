@@ -90,6 +90,27 @@ class NoteBlock(Base):
     note_import: Mapped[NoteImport] = relationship(back_populates="blocks")
 
 
+class AIRequest(Base):
+    """Every payload prepared for an AI provider, and what came back (send log)."""
+    __tablename__ = "ai_request"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("student.id"), index=True)
+    task: Mapped[str] = mapped_column(String(40))            # e.g. "suggest_marks"
+    provider: Mapped[str] = mapped_column(String(20))
+    model: Mapped[str] = mapped_column(String(200))
+    payload: Mapped[dict] = mapped_column(JSON)               # exact request messages (de-identified)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    replacements: Mapped[int] = mapped_column(default=0)      # identifiers replaced locally
+    status: Mapped[str] = mapped_column(String(20), default="previewed")  # previewed|sent|failed
+    response_text: Mapped[Optional[str]] = mapped_column(Text)
+    result: Mapped[Optional[dict]] = mapped_column(JSON)
+    usage: Mapped[Optional[dict]] = mapped_column(JSON)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    sent_at: Mapped[Optional[datetime]] = mapped_column()
+
+
 class Database:
     def __init__(self, data_dir: Path):
         data_dir.mkdir(parents=True, exist_ok=True)

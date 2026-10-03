@@ -1,6 +1,6 @@
 # Poster Grading — Design
 
-Status: v0.2 (stage 2 in progress), 2026-10-03. Owner: Chen Qinghua (NIE/NTU).
+Status: v0.3 (stage 2 in progress), 2026-10-03. Owner: Chen Qinghua (NIE/NTU).
 
 ## 1. Purpose
 
@@ -58,6 +58,10 @@ anything that has not passed the de-identification gate.
 4. **Send confirmation.** With `REQUIRE_SEND_CONFIRMATION=true` the exact outbound
    payload is shown and must be approved. Can be relaxed to "only when the local sweep
    flags something".
+   Implemented as a two-step API: *preview* builds and stores the exact payload
+   (`ai_request` row, SHA-256 of the messages); *send* transmits that stored payload
+   unchanged and refuses if it was altered. The preview also lists any name words that
+   survive de-identification in any letter case.
 5. **Send log.** Each external call is logged locally: timestamp, task, provider, model,
    payload hash and the payload itself.
 6. **Re-identification happens locally.** Responses refer to `S07`; names are restored
@@ -167,7 +171,10 @@ Both providers use the OpenAI-compatible chat API, so switching is a base-URL ch
 - `reference` — submission, raw string, parsed fields, verdict, matched record
 - `feedback` — assessment, version, ai_draft, final_text, approved_at
 - `export` — feedback, pdf path, created_at
-- `send_log` — task, provider, model, payload, payload_sha256, response, created_at
+- `ai_request` (send log) — student, task, provider, model, payload (de-identified messages),
+  payload_sha256, replacements, status (previewed/sent/failed), raw response, validated
+  result, token usage, error, created_at, sent_at. The latest sent `suggest_marks`
+  result is shown next to each dimension; AI never writes final marks itself.
 
 ## 10. Repository layout
 
@@ -189,7 +196,9 @@ docker-compose.yml  local deployment (127.0.0.1 only)
   - 2.1 import posters (roster from filenames, pseudonyms, page rendering, text) ✅
   - 2.2 grading screen: poster viewer, student navigation, autosave ✅
   - 2.3 presentation-note import: split into blocks, local match suggestions, apply ✅
-  - 2.4 AI mark suggestion via the de-identification gateway
+  - 2.4 AI mark suggestion via the de-identification gateway ✅
+    (text only: poster design is suggested only from the instructor's comments until
+    redacted poster images can be sent — stage 3)
   - 2.5 feedback drafting and editing; PDF export and archive
 - **Stage 3** — reference checking; local-model de-identification sweep; image redaction
 - **Stage 4** — run on the Mac as the daily tool; encrypted B2 backup/restore scripts

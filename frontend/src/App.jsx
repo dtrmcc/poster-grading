@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, STATUS_DOT, STATUS_LABEL } from "./api.js";
 import ImportDialog from "./ImportDialog.jsx";
 import NotesDialog from "./NotesDialog.jsx";
+import AIReviewDialog from "./AIReviewDialog.jsx";
 import PosterViewer from "./PosterViewer.jsx";
 
 const band = (letter) => (letter ? letter[0] : null); // "A-" -> "A"
@@ -36,6 +37,9 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [aiPreview, setAiPreview] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState("");
   const timer = useRef(null);
   const pending = useRef(null);  // {id, payload}
 
@@ -135,13 +139,13 @@ export default function App() {
   useEffect(() => {
     const onKey = (e) => {
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
-      if (typing || showImport || showNotes || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (typing || showImport || showNotes || aiPreview || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "ArrowRight" || e.key === "j") { e.preventDefault(); go(1); }
       if (e.key === "ArrowLeft" || e.key === "k") { e.preventDefault(); go(-1); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, showImport, showNotes]);
+  }, [go, showImport, showNotes, aiPreview]);
 
   useEffect(() => {
     const warn = (e) => { if (pending.current) { flush(); e.preventDefault(); } };
@@ -156,6 +160,38 @@ export default function App() {
       const first = students.find((s) => s.group === g);
       setCurrentId(first ? first.id : null);
     }
+  };
+
+  // ---------- AI mark suggestion
+  const sendAi = async (preview) => {
+    setAiBusy(true); setAiError("");
+    try {
+      const d = await api(`/ai/requests/${preview.request_id}/send`, { method: "POST" });
+      setStudent((cur) => (cur && cur.id === d.id ? d : cur));
+      setAiPreview(null);
+    } catch (e) {
+      setAiError(e.message);
+      if (!preview.require_confirmation) setAiPreview(preview);
+    } finally { setAiBusy(false); }
+  };
+
+  const requestAi = async () => {
+    setError(""); setAiError("");
+    await flush();
+    setAiBusy(true);
+    try {
+      const p = await api(`/students/${student.id}/ai/suggest-marks/preview`, { method: "POST" });
+      if (p.require_confirmation || p.residuals.length) setAiPreview(p);
+      else await sendAi(p);
+    } catch (e) { setError(e.message); }
+    finally { setAiBusy(false); }
+  };
+
+  const aiDim = (id) => student?.ai_marks?.dimensions.find((d) => d.id === id);
+  const useAi = (ids) => {
+    const marks = { ...draft.marks };
+    ids.forEach((id) => { const a = aiDim(id); if (a?.marks != null) marks[id] = a.marks; });
+    edit({ marks });
   };
 
   const score = student?.score;
@@ -251,7 +287,25 @@ export default function App() {
               </div>
 
               <div className="scoring">
-                <h2>Scoring</h2>
+                <div className="scoring-head">
+                  <h2>Scoring</h2>
+                  <span className="spacer" />
+                  {student.ai_marks && (
+                    <>
+                      <span className="muted small">
+                        AI ({student.ai_marks.model.split("/").pop()}),{" "}
+                        {new Date(student.ai_marks.sent_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
+                      </span>
+                      <button onClick={() => useAi(assignment.dimensions.map((d) => d.id))}>Use all AI marks</button>
+                    </>
+                  )}
+                  <button className="ai" onClick={requestAi}
+                    disabled={aiBusy || !health?.together_configured}
+                    title={health?.together_configured ? "Suggest marks with AI (you review the request first)"
+                      : "Add the Together API key and model to .env first"}>
+                    {aiBusy && !aiPreview ? "Preparing…" : student.ai_marks ? "✦ Suggest again" : "✦ AI suggest marks"}
+                  </button>
+                </div>
                 {assignment.dimensions.map((d) => {
                   const s = dimScore(d.id);
                   const value = draft.marks[d.id] ?? "";
@@ -270,6 +324,15 @@ export default function App() {
                         <span className="max">/ {Number(d.max_marks)}</span>
                       </div>
                       {err && <p className="descriptor bad">Use {err}</p>}
+                      {aiDim(d.id) && (
+                        <div className="ai-row">
+                          <span className="ai-mark">AI {aiDim(d.id).marks ?? "—"}</span>
+                          <span className="ai-why">{aiDim(d.id).rationale}</span>
+                          {aiDim(d.id).marks != null && String(aiDim(d.id).marks) !== String(value) && (
+                            <button className="link" onClick={() => useAi([d.id])}>Use</button>
+                          )}
+                        </div>
+                      )}
                       {!err && s?.letter && d.descriptors[band(s.letter)] && (
                         <p className="descriptor">{d.descriptors[band(s.letter)]}</p>
                       )}
@@ -298,6 +361,16 @@ export default function App() {
           )}
         </section>
       </main>
+
+      {aiPreview && (
+        <AIReviewDialog
+          preview={aiPreview}
+          busy={aiBusy}
+          error={aiError}
+          onSend={() => sendAi(aiPreview)}
+          onCancel={() => { setAiPreview(null); setAiError(""); }}
+        />
+      )}
 
       {showNotes && assignment && (
         <NotesDialog

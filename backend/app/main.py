@@ -1,16 +1,19 @@
+import hashlib
+import json
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import importer, notes
-from .db import Assessment, Database, NoteBlock, NoteImport, Student, utcnow
+from . import ai, deid, importer, notes
+from .db import AIRequest, Assessment, Database, NoteBlock, NoteImport, Student, utcnow
 from .rubric import Assignment, ScoreResult, load_all
 from .settings import settings
 
@@ -194,7 +197,20 @@ def _detail(st: Student) -> dict:
             "updated_at": asm.updated_at.isoformat() if asm.updated_at else None,
         },
         "score": a.score(marks).model_dump(mode="json"),
+        "ai_marks": _latest_suggestion(st),
     }
+
+
+def _latest_suggestion(st: Student) -> Optional[dict]:
+    s = Session.object_session(st)
+    req = s.scalar(select(AIRequest).where(
+        AIRequest.student_id == st.id, AIRequest.task == "suggest_marks",
+        AIRequest.status == "sent").order_by(AIRequest.id.desc()))
+    if not req or not req.result:
+        return None
+    return {"request_id": req.id, "model": req.model, "provider": req.provider,
+            "sent_at": req.sent_at.isoformat() if req.sent_at else None,
+            "dimensions": req.result["dimensions"]}
 
 
 @app.get("/api/students/{student_id}")
@@ -368,3 +384,95 @@ def apply_notes(assignment_id: str, group: str, req: ApplyNotes, s: Session = De
     ni.applied_at = utcnow()
     s.commit()
     return report
+
+
+# ---------------------------------------------------------------- AI: mark suggestion
+
+def _deidentifier(assignment_id: str, s: Session) -> deid.Deidentifier:
+    students = s.scalars(select(Student).where(Student.assignment_id == assignment_id)).all()
+    return deid.Deidentifier(deid.roster_from_students(students))
+
+
+@app.post("/api/students/{student_id}/ai/suggest-marks/preview")
+def preview_suggest_marks(student_id: int, s: Session = Depends(db)) -> dict:
+    """Build the exact de-identified payload and store it. Nothing is sent yet."""
+    st = _load(student_id, s)
+    a = _get(st.assignment_id)
+    provider = settings.ai_task_grade_suggest
+    try:
+        _, _, model = ai.provider_config(provider)
+    except ai.AIError as e:
+        raise HTTPException(422, str(e))
+    d = _deidentifier(st.assignment_id, s)
+    poster = d.deidentify(st.text)
+    note = d.deidentify(st.assessment.presentation_note)
+    comment = d.deidentify(st.assessment.comment)
+    messages = ai.build_suggest_messages(a, poster.text, note.text, comment.text)
+    blob = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+    warnings = []
+    if not st.text.strip():
+        warnings.append("The poster has no extractable text; only your note and comments will be used.")
+    if not st.assessment.presentation_note.strip():
+        warnings.append("No presentation note: delivery cannot be suggested.")
+    if not st.assessment.comment.strip():
+        warnings.append("No comments yet: poster design will probably not be suggested.")
+    leftovers = d.residuals(blob)
+    if leftovers:
+        warnings.append("Possible name remnants after de-identification (check before sending): "
+                        + ", ".join(leftovers))
+    req = AIRequest(student_id=st.id, task="suggest_marks", provider=provider, model=model,
+                    payload={"messages": messages}, payload_sha256=hashlib.sha256(blob.encode()).hexdigest(),
+                    replacements=len(poster.replacements) + len(note.replacements) + len(comment.replacements))
+    s.add(req)
+    s.commit()
+    return {"request_id": req.id, "provider": provider, "model": model,
+            "messages": messages, "replacements": req.replacements, "warnings": warnings,
+            "residuals": leftovers,
+            "require_confirmation": settings.require_send_confirmation}
+
+
+@app.post("/api/ai/requests/{request_id}/send")
+def send_ai_request(request_id: int, s: Session = Depends(db)) -> dict:
+    """Send a previously previewed payload, unchanged, and store the result."""
+    req = s.get(AIRequest, request_id)
+    if not req:
+        raise HTTPException(404, "request not found")
+    if req.status == "sent":
+        raise HTTPException(409, "this request was already sent")
+    blob = json.dumps(req.payload["messages"], ensure_ascii=False, sort_keys=True)
+    if hashlib.sha256(blob.encode()).hexdigest() != req.payload_sha256:
+        raise HTTPException(409, "payload changed after preview; not sent")
+    st = _load(req.student_id, s)
+    a = _get(st.assignment_id)
+    req.sent_at = utcnow()
+    try:
+        out = ai.call_chat(req.provider, req.model, req.payload["messages"], schema=ai.SUGGEST_SCHEMA)
+        req.response_text = out["content"]
+        req.usage = out["usage"]
+        dims = ai.validate_suggestion(a, ai.parse_json(out["content"]))
+    except ai.AIError as e:
+        req.status, req.error = "failed", str(e)
+        s.commit()
+        raise HTTPException(502, str(e))
+    except httpx.HTTPError as e:
+        req.status, req.error = "failed", f"network error: {e}"
+        s.commit()
+        raise HTTPException(502, f"could not reach {req.provider}: {e}")
+    d = _deidentifier(st.assignment_id, s)
+    for dim in dims:  # names come back only on this machine
+        dim["rationale"] = d.reidentify(dim["rationale"])
+        dim["evidence"] = [d.reidentify(e) for e in dim["evidence"]]
+    req.result = {"dimensions": dims}
+    req.status = "sent"
+    s.commit()
+    return _detail(st)
+
+
+@app.get("/api/ai/log")
+def ai_log(limit: int = 50, s: Session = Depends(db)) -> list[dict]:
+    rows = s.scalars(select(AIRequest).order_by(AIRequest.id.desc()).limit(limit)).all()
+    return [{"id": r.id, "student_id": r.student_id, "task": r.task, "provider": r.provider,
+             "model": r.model, "status": r.status, "replacements": r.replacements,
+             "created_at": r.created_at.isoformat(),
+             "sent_at": r.sent_at.isoformat() if r.sent_at else None,
+             "usage": r.usage, "error": r.error} for r in rows]

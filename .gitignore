@@ -24,3 +24,6 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# ---- Deployment secrets ----
+deploy/web.env

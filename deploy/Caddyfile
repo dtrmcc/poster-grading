@@ -1,0 +1,46 @@
+# Production web server: HTTPS (Let's Encrypt), password protection, the built
+# frontend, and /api proxied to the backend. Values come from deploy/web.env.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Everything — pages, API, poster images, PDFs — requires the login.
+	basic_auth {
+		{$APP_USER} {$APP_PASSWORD_HASH}
+	}
+
+	request_body {
+		max_size 300MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	handle /api/* {
+		reverse_proxy backend:8000 {
+			transport http {
+				read_timeout 300s
+			}
+		}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

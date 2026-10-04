@@ -1,6 +1,6 @@
 # Poster Grading — Design
 
-Status: v0.5 (stage 3 in progress), 2026-10-04. Owner: Chen Qinghua (NIE/NTU).
+Status: v0.6 (stage 3 in progress), 2026-10-04. Owner: Chen Qinghua (NIE/NTU).
 
 ## 1. Purpose
 
@@ -126,6 +126,33 @@ one block (joined). Applying never overwrites a note the instructor has edited u
 
 Status per student: `not started → suggested → marks confirmed → feedback approved → exported`.
 
+## 6a. Blind marking and the activity log
+
+**Blind marking** (`BLIND_AI_MARKS=true`, default). AI mark suggestions are stored when they
+arrive but the API does not return them until the instructor clicks *Reveal AI marks*. The
+reveal records the instructor's own marks at that moment (`ai_reveal`), so "before AI" and
+"after AI" judgements can be compared. Each new suggestion is hidden again. After the reveal,
+AI marks that differ by 0.5 or more are highlighted.
+
+**Activity log** (`event` table, append-only; the app never edits or deletes rows). Recorded:
+
+| Event | Data |
+|---|---|
+| `poster_imported` | new/updated, file hash |
+| `notes_applied` | block → student matches, suggested match, ignored, overwrite |
+| `assessment_changed` | old → new for each changed mark, presentation note, comment; UI actions (e.g. `use_ai_mark`); whether an AI suggestion was none/hidden/revealed at the time |
+| `ai_request_prepared` / `ai_result_received` / `ai_request_failed` | request id, task, model, validated result (the exact payload is in `ai_request`) |
+| `ai_marks_revealed` | own marks at reveal, whether complete, AI marks |
+| `feedback_changed` | old → new per section; actions (e.g. `use_ai_draft`) |
+| `feedback_exported` | version, grade, marks, final feedback text and the AI drafts |
+
+Saves are debounced (≈0.7 s), so text edits are captured as successive snapshots, not
+keystrokes. Read-only access: `GET /api/events?student_id=…&type=…`.
+
+Intended uses: the instructor's own reflection on marking now; research later **only** with
+ethics approval. A de-identified research export (pseudonyms only, free text scrubbed) is a
+planned feature.
+
 ## 7. Scoring (current assignment)
 
 Defined in `config/assignments/als10a-2026-poster.yaml`.
@@ -177,6 +204,8 @@ Both providers use the OpenAI-compatible chat API, so switching is a base-URL ch
   each, ai_request, updated_at
 - `export` — student, version, pdf path (under DATA_DIR), sha256, letter, total, created_at.
   A student counts as *exported* when the latest export is newer than any later edit.
+- `ai_reveal` — student, request ids, own marks at reveal, revealed_at
+- `event` — append-only activity log (see §6a)
 - `ai_request` (send log) — student, task, provider, model, payload (de-identified messages),
   payload_sha256, replacements, status (previewed/sent/failed), raw response, validated
   result, token usage, error, created_at, sent_at. The latest sent `suggest_marks`

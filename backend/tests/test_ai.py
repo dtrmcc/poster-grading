@@ -136,6 +136,8 @@ def test_preview_is_deidentified_and_send_stores_result(client, monkeypatch):
     monkeypatch.setattr(ai, "call_chat", fake_call)
     d = client.post(f"/api/ai/requests/{p['request_id']}/send").json()
     assert sent["messages"] == p["messages"]                      # exactly what was previewed
+    assert d["ai_marks"]["hidden"] is True and "dimensions" not in d["ai_marks"]   # blind by default
+    d = client.post(f"/api/students/{sid}/ai/reveal").json()
     dims = {x["id"]: x for x in d["ai_marks"]["dimensions"]}
     assert dims["delivery"]["marks"] == "5.25"
     assert dims["delivery"]["rationale"] == "Tan Mei Ling engaged the audience."  # re-identified locally

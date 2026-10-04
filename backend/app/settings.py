@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Show every outbound payload for approval before it is sent
     require_send_confirmation: bool = True
 
+    # Blind marking: AI mark suggestions stay hidden until the instructor reveals them
+    blind_ai_marks: bool = True
+
     # Reference checking
     crossref_mailto: str = ""
 

@@ -19,8 +19,8 @@ from sqlalchemy.orm import Session
 
 from . import ai, deid, importer, notes, redact
 from . import feedback as fb
-from .db import (AIRequest, Assessment, Database, Export, Feedback, NoteBlock, NoteImport,
-                 Redaction, Student, utcnow)
+from .db import (AIReveal, AIRequest, Assessment, Database, Event, Export, Feedback, NoteBlock,
+                 NoteImport, Redaction, Student, utcnow)
 from .rubric import Assignment, ScoreResult, load_all
 from .settings import settings
 
@@ -50,6 +50,13 @@ def _get(assignment_id: str) -> Assignment:
         return _assignments[assignment_id]
     except KeyError:
         raise HTTPException(404, f"assignment {assignment_id} not found")
+
+
+def _log(s: Session, type_: str, st: Optional[Student] = None, assignment_id: Optional[str] = None,
+         **data) -> None:
+    """Append to the activity log (committed together with the caller's change)."""
+    s.add(Event(type=type_, student_id=st.id if st else None,
+                assignment_id=st.assignment_id if st else assignment_id, data=data))
 
 
 def _student_dir(s: Student) -> Path:
@@ -164,6 +171,8 @@ async def import_submissions(
         st.pages, st.text = r.pages, r.text
         s.commit()
         result["added" if is_new else "updated"].append(st.display_name)
+        _log(s, "poster_imported", st, new=is_new, sha256=digest, filename=name)
+        s.commit()
     return result
 
 
@@ -246,7 +255,7 @@ def _latest_sent(st: Student, task: str) -> Optional[AIRequest]:
         AIRequest.status == "sent").order_by(AIRequest.id.desc()))
 
 
-def _latest_suggestion(st: Student) -> Optional[dict]:
+def _suggestion_raw(st: Student) -> Optional[dict]:
     """Latest text-based suggestion, with image-based dimensions (design) taken from the
     latest design review when that review produced a mark."""
     text = _latest_sent(st, "suggest_marks")
@@ -259,10 +268,50 @@ def _latest_suggestion(st: Student) -> Optional[dict]:
         for d in image.result["dimensions"]:
             if d["marks"] is not None or d["id"] not in dims or dims[d["id"]]["marks"] is None:
                 dims[d["id"]] = dict(d, source="image")
-    models = [r.model for r in (text, image) if r and r.result]
-    sent = max(_naive(r.sent_at) for r in (text, image) if r and r.result and r.sent_at)
-    return {"model": " + ".join(dict.fromkeys(models)), "sent_at": _iso(sent),
+    used = [r for r in (text, image) if r and r.result]
+    sent = max(_naive(r.sent_at) for r in used if r.sent_at)
+    return {"model": " + ".join(dict.fromkeys(r.model for r in used)), "sent_at": _iso(sent),
+            "request_ids": sorted(r.id for r in used),
             "dimensions": [dims[d.id] for d in a.dimensions if d.id in dims]}
+
+
+def _revealed(st: Student, request_ids: list[int]) -> Optional[AIReveal]:
+    s = Session.object_session(st)
+    for r in s.scalars(select(AIReveal).where(AIReveal.student_id == st.id).order_by(AIReveal.id.desc())):
+        if set(request_ids) <= set(r.request_ids):
+            return r
+    return None
+
+
+def _latest_suggestion(st: Student) -> Optional[dict]:
+    """What the UI may see. In blind mode the marks stay hidden until revealed."""
+    raw = _suggestion_raw(st)
+    if not raw:
+        return None
+    rev = _revealed(st, raw["request_ids"])
+    if settings.blind_ai_marks and not rev:
+        return {"hidden": True, "model": raw["model"], "sent_at": raw["sent_at"],
+                "request_ids": raw["request_ids"]}
+    return dict(raw, hidden=False, revealed_at=_iso(rev.revealed_at) if rev else None,
+                own_marks_at_reveal=rev.own_marks if rev else None)
+
+
+@app.post("/api/students/{student_id}/ai/reveal")
+def reveal_ai_marks(student_id: int, s: Session = Depends(db)) -> dict:
+    """Blind marking: record the instructor's own marks, then show the AI's."""
+    st = _load(student_id, s)
+    a = _get(st.assignment_id)
+    raw = _suggestion_raw(st)
+    if not raw:
+        raise HTTPException(404, "no AI suggestion to reveal")
+    if not _revealed(st, raw["request_ids"]):
+        own = dict(st.assessment.marks or {})
+        s.add(AIReveal(student_id=st.id, request_ids=raw["request_ids"], own_marks=own))
+        _log(s, "ai_marks_revealed", st, request_ids=raw["request_ids"], own_marks=own,
+             own_marks_complete=len(own) == len(a.dimensions),
+             ai_marks={d["id"]: d["marks"] for d in raw["dimensions"]})
+        s.commit()
+    return _detail(st)
 
 
 @app.get("/api/students/{student_id}")
@@ -290,6 +339,18 @@ class AssessmentUpdate(BaseModel):
     presentation_note: Optional[str] = None
     comment: Optional[str] = None
     marks: Optional[dict[str, Optional[Decimal]]] = None
+    # What the instructor did in the UI since the last save, e.g.
+    # [{"type": "use_ai_mark", "dims": ["design"]}] — recorded in the activity log.
+    actions: Optional[list[dict]] = None
+
+
+def _ai_visibility(st: Student) -> str:
+    raw = _suggestion_raw(st)
+    if not raw:
+        return "none"
+    if not settings.blind_ai_marks or _revealed(st, raw["request_ids"]):
+        return "revealed"
+    return "hidden"
 
 
 @app.put("/api/students/{student_id}/assessment")
@@ -297,17 +358,28 @@ def update_assessment(student_id: int, upd: AssessmentUpdate, s: Session = Depen
     st = _load(student_id, s)
     a = _get(st.assignment_id)
     asm = st.assessment
+    changes: dict = {}
     if upd.marks is not None:
         clean = {k: v for k, v in upd.marks.items() if v is not None}
         try:
             a.score(clean)  # validates range, step and dimension ids
         except ValueError as e:
             raise HTTPException(422, str(e))
-        asm.marks = {k: str(v) for k, v in clean.items()}
-    if upd.presentation_note is not None:
-        asm.presentation_note = upd.presentation_note
-    if upd.comment is not None:
-        asm.comment = upd.comment
+        new = {k: format(v.normalize(), "f") for k, v in clean.items()}
+        old = {k: format(Decimal(v).normalize(), "f") for k, v in (asm.marks or {}).items()}
+        mark_changes = {d: {"old": old.get(d), "new": new.get(d)} for d in set(old) | set(new)
+                        if old.get(d) != new.get(d)}
+        if mark_changes:
+            changes["marks"] = mark_changes
+        asm.marks = new
+    for field in ("presentation_note", "comment"):
+        val = getattr(upd, field)
+        if val is not None and val != getattr(asm, field):
+            changes[field] = {"old": getattr(asm, field), "new": val}
+            setattr(asm, field, val)
+    if changes or upd.actions:
+        _log(s, "assessment_changed", st, changes=changes, actions=upd.actions or [],
+             ai_suggestion=_ai_visibility(st))
     s.commit()
     return _detail(st)
 
@@ -434,6 +506,9 @@ def apply_notes(assignment_id: str, group: str, req: ApplyNotes, s: Session = De
             st.assessment.presentation_note = new
             report["applied"].append(st.display_name)
     ni.applied_at = utcnow()
+    _log(s, "notes_applied", assignment_id=assignment_id, group=group, overwrite=req.overwrite,
+         matches=[{"block": b.position, "student_id": b.student_id, "ignored": b.ignored,
+                   "suggested": b.suggested_student_id} for b in ni.blocks], report=report)
     s.commit()
     return report
 
@@ -476,6 +551,9 @@ def preview_suggest_marks(student_id: int, s: Session = Depends(db)) -> dict:
                     payload={"messages": messages}, payload_sha256=hashlib.sha256(blob.encode()).hexdigest(),
                     replacements=len(poster.replacements) + len(note.replacements) + len(comment.replacements))
     s.add(req)
+    s.flush()
+    _log(s, "ai_request_prepared", st, request_id=req.id, task=req.task, model=req.model,
+         replacements=req.replacements)
     s.commit()
     return {"request_id": req.id, "provider": provider, "model": model,
             "messages": messages, "replacements": req.replacements, "warnings": warnings,
@@ -516,10 +594,12 @@ def send_ai_request(request_id: int, s: Session = Depends(db)) -> dict:
                 raise ai.AIError("the model returned empty feedback")
     except ai.AIError as e:
         req.status, req.error = "failed", str(e)
+        _log(s, "ai_request_failed", st, request_id=req.id, task=req.task, error=str(e))
         s.commit()
         raise HTTPException(502, str(e))
     except httpx.HTTPError as e:
         req.status, req.error = "failed", f"network error: {e}"
+        _log(s, "ai_request_failed", st, request_id=req.id, task=req.task, error=f"network: {e}")
         s.commit()
         raise HTTPException(502, f"could not reach {req.provider}: {e}")
     d = _deidentifier(st.assignment_id, s)   # names come back only on this machine
@@ -538,6 +618,8 @@ def send_ai_request(request_id: int, s: Session = Depends(db)) -> dict:
         if not f.presentation.strip():
             f.presentation = pres_fb
     req.status = "sent"
+    _log(s, "ai_result_received", st, request_id=req.id, task=req.task, model=req.model,
+         result=req.result, blind=settings.blind_ai_marks and req.task != "draft_feedback")
     s.commit()
     return _detail(st)
 
@@ -597,16 +679,22 @@ def get_feedback(student_id: int, s: Session = Depends(db)) -> dict:
 class FeedbackUpdate(BaseModel):
     poster: Optional[str] = None
     presentation: Optional[str] = None
+    actions: Optional[list[dict]] = None   # e.g. [{"type": "use_ai_draft", "section": "poster"}]
 
 
 @app.put("/api/students/{student_id}/feedback")
 def update_feedback(student_id: int, upd: FeedbackUpdate, s: Session = Depends(db)) -> dict:
     st = _load(student_id, s)
     f = _feedback_row(st, s)
-    if upd.poster is not None:
-        f.poster = upd.poster
-    if upd.presentation is not None:
-        f.presentation = upd.presentation
+    changes = {}
+    for field in ("poster", "presentation"):
+        val = getattr(upd, field)
+        if val is not None and val != getattr(f, field):
+            changes[field] = {"old": getattr(f, field), "new": val}
+            setattr(f, field, val)
+    if changes or upd.actions:
+        _log(s, "feedback_changed", st, changes=changes, actions=upd.actions or [],
+             ai_draft_request_id=f.ai_request_id)
     s.commit()
     return _feedback_out(st, s)
 
@@ -639,6 +727,9 @@ def preview_draft_feedback(student_id: int, s: Session = Depends(db)) -> dict:
                     payload={"messages": messages}, payload_sha256=hashlib.sha256(blob.encode()).hexdigest(),
                     replacements=len(poster.replacements) + len(note.replacements) + len(comment.replacements))
     s.add(req)
+    s.flush()
+    _log(s, "ai_request_prepared", st, request_id=req.id, task=req.task, model=req.model,
+         replacements=req.replacements)
     s.commit()
     return {"request_id": req.id, "task": "draft_feedback", "provider": provider, "model": model,
             "messages": messages, "replacements": req.replacements, "warnings": warnings,
@@ -665,6 +756,10 @@ def export_feedback(student_id: int, s: Session = Depends(db)) -> dict:
     e = Export(student_id=st.id, version=version, path=str(rel), sha256=importer.sha256(out.read_bytes()),
                letter=sc.letter, total_marks=format(sc.total_marks.normalize(), "f"), created_at=now)
     s.add(e)
+    _log(s, "feedback_exported", st, version=version, letter=sc.letter,
+         total=format(sc.total_marks.normalize(), "f"), marks=dict(st.assessment.marks or {}),
+         poster_feedback=f.poster, presentation_feedback=f.presentation,
+         ai_poster_draft=f.ai_poster, ai_presentation_draft=f.ai_presentation)
     s.commit()
     return _feedback_out(st, s)
 
@@ -807,6 +902,9 @@ def preview_design_review(student_id: int, s: Session = Depends(db)) -> dict:
                     payload={"messages": messages}, payload_sha256=hashlib.sha256(blob.encode()).hexdigest(),
                     replacements=len(comment.replacements) + boxes)
     s.add(req)
+    s.flush()
+    _log(s, "ai_request_prepared", st, request_id=req.id, task=req.task, model=req.model,
+         replacements=req.replacements)
     s.commit()
     shown, n = ai.strip_images(messages)
     return {"request_id": req.id, "task": "design_review", "provider": provider, "model": model,
@@ -827,3 +925,17 @@ def ai_request_image(request_id: int, n: int, s: Session = Depends(db)) -> Respo
     except KeyError:
         raise HTTPException(404, "image not found")
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------- activity log (read-only)
+
+@app.get("/api/events")
+def list_events(student_id: Optional[int] = None, type: Optional[str] = None, limit: int = 200,
+                s: Session = Depends(db)) -> list[dict]:
+    q = select(Event).order_by(Event.id.desc()).limit(min(limit, 5000))
+    if student_id is not None:
+        q = q.where(Event.student_id == student_id)
+    if type:
+        q = q.where(Event.type == type)
+    return [{"id": e.id, "ts": _iso(e.ts), "student_id": e.student_id, "type": e.type, "data": e.data}
+            for e in s.scalars(q)]

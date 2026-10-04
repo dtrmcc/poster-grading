@@ -124,7 +124,8 @@ def test_redaction_api_and_design_review(client, monkeypatch):
             {"id": "delivery", "marks": 6, "rationale": "should be ignored", "evidence": []}]}), "usage": {}}
 
     monkeypatch.setattr(ai, "call_chat", fake)
-    d = client.post(f"/api/ai/requests/{p['request_id']}/send").json()
+    client.post(f"/api/ai/requests/{p['request_id']}/send")
+    d = client.post(f"/api/students/{sid}/ai/reveal").json()
     assert sent == {"model": "vision/model", "has_image": True}
     dims = {x["id"]: x for x in d["ai_marks"]["dimensions"]}
     assert list(dims) == ["design"] and dims["design"]["marks"] == "3.5" and dims["design"]["source"] == "image"
@@ -137,6 +138,8 @@ def test_redaction_api_and_design_review(client, monkeypatch):
     monkeypatch.setattr(ai, "call_chat", fake_text)
     t = client.post(f"/api/students/{sid}/ai/suggest-marks/preview").json()
     d = client.post(f"/api/ai/requests/{t['request_id']}/send").json()
+    assert d["ai_marks"]["hidden"] is True                     # a new suggestion is hidden again
+    d = client.post(f"/api/students/{sid}/ai/reveal").json()
     dims = {x["id"]: x for x in d["ai_marks"]["dimensions"]}
     assert dims["design"]["marks"] == "3.5" and dims["delivery"]["marks"] == "5"
     assert d["ai_marks"]["model"] == "text/model + vision/model"

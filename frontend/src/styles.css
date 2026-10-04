@@ -243,3 +243,8 @@ details summary { cursor: pointer; font-size: 13px; }
   position: absolute; top: -9px; right: -9px; width: 18px; height: 18px; padding: 0; line-height: 16px;
   border-radius: 50%; background: #ff5a4f; color: #fff; border: none; font-size: 13px; cursor: pointer;
 }
+
+/* Blind marking */
+button.reveal { border-color: var(--warn); color: var(--warn); font-weight: 600; }
+.ai-row.differs { outline: 1px solid var(--warn); }
+.ai-row.differs .ai-mark { color: var(--warn); }

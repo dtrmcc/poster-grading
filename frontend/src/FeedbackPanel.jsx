@@ -39,10 +39,12 @@ export default function FeedbackPanel({ student, marksComplete, aiAvailable, aiB
     return () => { cancelled = true; flush(); };
   }, [student.id, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const edit = (patch) => {
+  const edit = (patch, action = null) => {
     const next = { ...draft, ...patch };
     setDraft(next);
-    pending.current = { id: student.id, body: next };
+    const prev = pending.current?.id === student.id ? pending.current.body.actions || [] : [];
+    const actions = action ? [...prev, action] : prev;
+    pending.current = { id: student.id, body: actions.length ? { ...next, actions } : next };
     setSaveState("pending");
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, SAVE_DELAY);
@@ -93,7 +95,7 @@ export default function FeedbackPanel({ student, marksComplete, aiAvailable, aiB
           <span className="fb-title">
             {title}
             {ai != null && ai !== draft[key] && (
-              <button className="link" onClick={(e) => { e.preventDefault(); edit({ [key]: ai }); }}
+              <button className="link" onClick={(e) => { e.preventDefault(); edit({ [key]: ai }, { type: "use_ai_draft", section: key }); }}
                 title="Replace this section with the latest AI draft">
                 Use latest AI draft
               </button>

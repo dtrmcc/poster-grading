@@ -152,6 +152,31 @@ class Redaction(Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
+class AIReveal(Base):
+    """The instructor revealed hidden AI mark suggestions (blind marking).
+    `own_marks` are the instructor's marks at that moment, before seeing the AI."""
+    __tablename__ = "ai_reveal"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("student.id"), index=True)
+    request_ids: Mapped[list] = mapped_column(JSON, default=list)
+    own_marks: Mapped[dict] = mapped_column(JSON, default=dict)
+    revealed_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class Event(Base):
+    """Append-only activity log (self-review now; research later, with ethics approval).
+    Never updated or deleted by the app."""
+    __tablename__ = "event"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(default=utcnow, index=True)
+    assignment_id: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    student_id: Mapped[Optional[int]] = mapped_column(ForeignKey("student.id"), index=True)
+    type: Mapped[str] = mapped_column(String(40), index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class Database:
     def __init__(self, data_dir: Path):
         data_dir.mkdir(parents=True, exist_ok=True)

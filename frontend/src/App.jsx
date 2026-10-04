@@ -98,7 +98,7 @@ export default function App() {
     }
   }, []);
 
-  const edit = (patch) => {
+  const edit = (patch, action = null) => {
     const next = { ...draft, ...patch };
     setDraft(next);
     const invalid = assignment.dimensions.some((d) => markError(next.marks[d.id], d, step));
@@ -107,6 +107,10 @@ export default function App() {
     );
     const payload = { presentation_note: next.presentation_note, comment: next.comment };
     if (!invalid) payload.marks = marks;
+    // UI actions since the last save (e.g. adopting an AI mark) go to the activity log
+    const prevActions = pending.current?.id === student.id ? pending.current.payload.actions || [] : [];
+    const actions = action ? [...prevActions, action] : prevActions;
+    if (actions.length) payload.actions = actions;
     pending.current = { id: student.id, payload };
     setSaveState("pending");
     clearTimeout(timer.current);
@@ -225,12 +229,27 @@ export default function App() {
     setImageRefreshing(false);
   };
 
-  const aiDim = (id) => student?.ai_marks?.dimensions.find((d) => d.id === id);
+  const aiDim = (id) => (student?.ai_marks?.hidden ? null : student?.ai_marks?.dimensions?.find((d) => d.id === id));
   const useAi = (ids) => {
     const marks = { ...draft.marks };
-    ids.forEach((id) => { const a = aiDim(id); if (a?.marks != null) marks[id] = a.marks; });
-    edit({ marks });
+    const used = [];
+    ids.forEach((id) => {
+      const a = aiDim(id);
+      if (a?.marks != null && String(a.marks) !== String(marks[id] ?? "")) { marks[id] = a.marks; used.push(id); }
+    });
+    if (used.length) edit({ marks }, { type: "use_ai_mark", dims: used });
   };
+
+  const revealAi = async () => {
+    await flush();
+    try {
+      const d = await api(`/students/${student.id}/ai/reveal`, { method: "POST" });
+      setStudent((cur) => (cur && cur.id === d.id ? d : cur));
+    } catch (e) { setError(e.message); }
+  };
+  const aiHidden = !!student?.ai_marks?.hidden;
+  const ownMarksComplete = assignment && draft
+    ? assignment.dimensions.every((d) => draft.marks[d.id] != null && draft.marks[d.id] !== "") : false;
 
   const score = student?.score;
   const dimScore = (id) => score?.dimensions.find((d) => d.id === id);
@@ -364,10 +383,21 @@ export default function App() {
                 <div className="scoring-head">
                   <h2>Scoring</h2>
                   <span className="spacer" />
-                  {student.ai_marks && (
+                  {student.ai_marks && aiHidden && (
                     <>
                       <span className="muted small">
-                        AI ({student.ai_marks.model.split("/").pop()}),{" "}
+                        {ownMarksComplete ? "AI suggestion ready, hidden" : "AI suggestion ready, hidden — enter your own marks first"}
+                      </span>
+                      <button className="reveal" onClick={revealAi}
+                        title="Your current marks are recorded before the AI's are shown">
+                        👁 Reveal AI marks
+                      </button>
+                    </>
+                  )}
+                  {student.ai_marks && !aiHidden && (
+                    <>
+                      <span className="muted small">
+                        AI ({student.ai_marks.model.split(" + ").map((m) => m.split("/").pop()).join(" + ")}),{" "}
                         {new Date(student.ai_marks.sent_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
                       </span>
                       <button onClick={() => useAi(assignment.dimensions.map((d) => d.id))}>Use all AI marks</button>
@@ -399,7 +429,8 @@ export default function App() {
                       </div>
                       {err && <p className="descriptor bad">Use {err}</p>}
                       {aiDim(d.id) && (
-                        <div className="ai-row">
+                        <div className={`ai-row ${aiDim(d.id).marks != null && value !== "" &&
+                          Math.abs(Number(aiDim(d.id).marks) - Number(value)) >= 0.5 ? "differs" : ""}`}>
                           <span className="ai-mark">AI {aiDim(d.id).marks ?? "—"}</span>
                           <span className="ai-why">{aiDim(d.id).rationale}</span>
                           {aiDim(d.id).marks != null && String(aiDim(d.id).marks) !== String(value) && (

@@ -171,3 +171,76 @@ def validate_suggestion(a: Assignment, raw: dict) -> list[dict]:
             "evidence": [str(x) for x in ev][:3] if isinstance(ev, list) else [],
         })
     return out
+
+
+# ------------------------------------------------------------- design review (image)
+
+SYSTEM_DESIGN = """You assist a university lecturer who is grading academic posters made by \
+pre-service teachers. You will see an image of the poster and judge its VISUAL DESIGN only. \
+You suggest marks; the lecturer decides.
+
+Rules:
+- Black rectangles hide names and other personal details for privacy. Ignore them completely;
+  never treat them as a design flaw.
+- Judge: overall organisation and reading order, visual hierarchy (title, headings), readability
+  (font size, line length, contrast), balance of text and white space, and how well images,
+  graphs, tables and other visuals are integrated to support understanding.
+- Assess ONLY the dimensions listed. Use the rubric band descriptors; the band's letter range tells
+  you roughly which part of the scale to use (A+ to A- = top 15%, B+ to B- = 70-84%,
+  C+ to C = 60-69%, D+ to D = 50-59%, F < 50%). Marks are multiples of the step, 0 to max.
+- INSTRUCTOR COMMENTS, if any, are the lecturer's own observations; take them into account.
+- rationale: at most two sentences naming concrete visual features. evidence: one to three
+  short observations about specific parts of the poster.
+- Respond ONLY with JSON matching this schema:
+{"dimensions": [{"id": "<dimension id>", "marks": <number or null>, "rationale": "<text>", "evidence": ["<text>"]}]}"""
+
+
+def image_dimensions(a: Assignment) -> list:
+    return [d for d in a.dimensions if "poster_image" in d.evidence]
+
+
+def build_design_messages(a: Assignment, comment: str, images_b64: list[str]) -> list[dict]:
+    lines = [f"ASSIGNMENT: {a.assignment.course} — {a.assignment.title}",
+             f"Mark step: {a.scoring.mark_step}.", "", "DIMENSIONS TO ASSESS:"]
+    for d in image_dimensions(a):
+        lines.append(f"\n[{d.id}] {d.name} — max {d.max_marks} marks")
+        for band, text in d.descriptors.items():
+            if text:
+                lines.append(f"  band {band}: {text}")
+    lines += ["", "=== INSTRUCTOR COMMENTS ===", comment.strip() or "(none)", "",
+              f"The poster image follows ({len(images_b64)} page{'s' if len(images_b64) > 1 else ''})."]
+    content: list[dict] = [{"type": "text", "text": "\n".join(lines)}]
+    for b64 in images_b64:
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+    return [{"role": "system", "content": SYSTEM_DESIGN}, {"role": "user", "content": content}]
+
+
+def strip_images(messages: list[dict]) -> tuple[list[dict], int]:
+    """Copy of messages with image data replaced by "[image N]" (for display)."""
+    out, n = [], 0
+    for m in messages:
+        if isinstance(m["content"], list):
+            parts = []
+            for c in m["content"]:
+                if c.get("type") == "image_url":
+                    n += 1
+                    parts.append(f"[image {n}]")
+                else:
+                    parts.append(c.get("text", ""))
+            out.append({"role": m["role"], "content": "\n\n".join(parts)})
+        else:
+            out.append(m)
+    return out, n
+
+
+def image_bytes(messages: list[dict], n: int) -> bytes:
+    import base64
+    i = 0
+    for m in messages:
+        if isinstance(m["content"], list):
+            for c in m["content"]:
+                if c.get("type") == "image_url":
+                    i += 1
+                    if i == n:
+                        return base64.b64decode(c["image_url"]["url"].split(",", 1)[1])
+    raise KeyError(n)

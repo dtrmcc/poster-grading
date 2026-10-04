@@ -5,6 +5,7 @@ import json
 import re
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -16,10 +17,10 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import ai, deid, importer, notes
+from . import ai, deid, importer, notes, redact
 from . import feedback as fb
 from .db import (AIRequest, Assessment, Database, Export, Feedback, NoteBlock, NoteImport,
-                 Student, utcnow)
+                 Redaction, Student, utcnow)
 from .rubric import Assignment, ScoreResult, load_all
 from .settings import settings
 
@@ -57,12 +58,21 @@ def _student_dir(s: Student) -> Path:
 
 # ---------------------------------------------------------------- assignments
 
+def _vision_ready() -> bool:
+    try:
+        ai.provider_config(settings.ai_task_design_review, "vision")
+        return True
+    except ai.AIError:
+        return False
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
         "status": "ok",
         "assignments": len(_assignments),
         "together_configured": settings.together_configured(),
+        "vision_configured": _vision_ready(),
         "require_send_confirmation": settings.require_send_confirmation,
     }
 
@@ -159,6 +169,13 @@ async def import_submissions(
 
 # ---------------------------------------------------------------- students
 
+def _iso(dt) -> Optional[str]:
+    """Timestamps are stored in UTC; SQLite returns them without a zone."""
+    if dt is None:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).isoformat()
+
+
 def _naive(dt):
     return dt.replace(tzinfo=None) if dt else dt
 
@@ -215,23 +232,37 @@ def _detail(st: Student) -> dict:
             "presentation_note": asm.presentation_note, "comment": asm.comment,
             "marks": {k: str(v) for k, v in marks.items()},
             "override_letter": asm.override_letter, "override_reason": asm.override_reason,
-            "updated_at": asm.updated_at.isoformat() if asm.updated_at else None,
+            "updated_at": _iso(asm.updated_at) if asm.updated_at else None,
         },
         "score": a.score(marks).model_dump(mode="json"),
         "ai_marks": _latest_suggestion(st),
     }
 
 
-def _latest_suggestion(st: Student) -> Optional[dict]:
+def _latest_sent(st: Student, task: str) -> Optional[AIRequest]:
     s = Session.object_session(st)
-    req = s.scalar(select(AIRequest).where(
-        AIRequest.student_id == st.id, AIRequest.task == "suggest_marks",
+    return s.scalar(select(AIRequest).where(
+        AIRequest.student_id == st.id, AIRequest.task == task,
         AIRequest.status == "sent").order_by(AIRequest.id.desc()))
-    if not req or not req.result:
+
+
+def _latest_suggestion(st: Student) -> Optional[dict]:
+    """Latest text-based suggestion, with image-based dimensions (design) taken from the
+    latest design review when that review produced a mark."""
+    text = _latest_sent(st, "suggest_marks")
+    image = _latest_sent(st, "design_review")
+    if not (text and text.result) and not (image and image.result):
         return None
-    return {"request_id": req.id, "model": req.model, "provider": req.provider,
-            "sent_at": req.sent_at.isoformat() if req.sent_at else None,
-            "dimensions": req.result["dimensions"]}
+    a = _get(st.assignment_id)
+    dims = {d["id"]: dict(d, source="text") for d in (text.result["dimensions"] if text and text.result else [])}
+    if image and image.result:
+        for d in image.result["dimensions"]:
+            if d["marks"] is not None or d["id"] not in dims or dims[d["id"]]["marks"] is None:
+                dims[d["id"]] = dict(d, source="image")
+    models = [r.model for r in (text, image) if r and r.result]
+    sent = max(_naive(r.sent_at) for r in (text, image) if r and r.result and r.sent_at)
+    return {"model": " + ".join(dict.fromkeys(models)), "sent_at": _iso(sent),
+            "dimensions": [dims[d.id] for d in a.dimensions if d.id in dims]}
 
 
 @app.get("/api/students/{student_id}")
@@ -286,8 +317,8 @@ def update_assessment(student_id: int, upd: AssessmentUpdate, s: Session = Depen
 def _note_import_out(ni: NoteImport, s: Session) -> dict:
     return {
         "id": ni.id, "group": ni.group, "filename": ni.filename,
-        "imported_at": ni.imported_at.isoformat(),
-        "applied_at": ni.applied_at.isoformat() if ni.applied_at else None,
+        "imported_at": _iso(ni.imported_at),
+        "applied_at": _iso(ni.applied_at) if ni.applied_at else None,
         "blocks": [{
             "id": b.id, "position": b.position, "text": b.text,
             "suggested_student_id": b.suggested_student_id,
@@ -466,15 +497,18 @@ def send_ai_request(request_id: int, s: Session = Depends(db)) -> dict:
     st = _load(req.student_id, s)
     a = _get(st.assignment_id)
     req.sent_at = utcnow()
-    schema = ai.SUGGEST_SCHEMA if req.task == "suggest_marks" else fb.FEEDBACK_SCHEMA
+    schema = fb.FEEDBACK_SCHEMA if req.task == "draft_feedback" else ai.SUGGEST_SCHEMA
     try:
         out = ai.call_chat(req.provider, req.model, req.payload["messages"], schema=schema,
-                           max_tokens=2500 if req.task == "suggest_marks" else 3000)
+                           max_tokens=3000 if req.task == "draft_feedback" else 2500)
         req.response_text = out["content"]
         req.usage = out["usage"]
         parsed = ai.parse_json(out["content"])
         if req.task == "suggest_marks":
             dims = ai.validate_suggestion(a, parsed)
+        elif req.task == "design_review":
+            wanted = {d.id for d in ai.image_dimensions(a)}
+            dims = [d for d in ai.validate_suggestion(a, parsed) if d["id"] in wanted]
         else:
             poster_fb = str(parsed.get("poster") or "").strip()
             pres_fb = str(parsed.get("presentation") or "").strip()
@@ -489,7 +523,7 @@ def send_ai_request(request_id: int, s: Session = Depends(db)) -> dict:
         s.commit()
         raise HTTPException(502, f"could not reach {req.provider}: {e}")
     d = _deidentifier(st.assignment_id, s)   # names come back only on this machine
-    if req.task == "suggest_marks":
+    if req.task in ("suggest_marks", "design_review"):
         for dim in dims:
             dim["rationale"] = d.reidentify(dim["rationale"])
             dim["evidence"] = [d.reidentify(e) for e in dim["evidence"]]
@@ -513,8 +547,8 @@ def ai_log(limit: int = 50, s: Session = Depends(db)) -> list[dict]:
     rows = s.scalars(select(AIRequest).order_by(AIRequest.id.desc()).limit(limit)).all()
     return [{"id": r.id, "student_id": r.student_id, "task": r.task, "provider": r.provider,
              "model": r.model, "status": r.status, "replacements": r.replacements,
-             "created_at": r.created_at.isoformat(),
-             "sent_at": r.sent_at.isoformat() if r.sent_at else None,
+             "created_at": _iso(r.created_at),
+             "sent_at": _iso(r.sent_at) if r.sent_at else None,
              "usage": r.usage, "error": r.error} for r in rows]
 
 
@@ -540,7 +574,7 @@ def _complete_score(st: Student):
 
 def _export_out(e: Export) -> dict:
     return {"id": e.id, "version": e.version, "letter": e.letter, "total_marks": e.total_marks,
-            "created_at": e.created_at.isoformat(), "url": f"/api/exports/{e.id}/pdf"}
+            "created_at": _iso(e.created_at), "url": f"/api/exports/{e.id}/pdf"}
 
 
 def _feedback_out(st: Student, s: Session) -> dict:
@@ -549,7 +583,7 @@ def _feedback_out(st: Student, s: Session) -> dict:
     return {
         "poster": f.poster if f else "", "presentation": f.presentation if f else "",
         "ai_poster": f.ai_poster if f else None, "ai_presentation": f.ai_presentation if f else None,
-        "updated_at": f.updated_at.isoformat() if f and f.updated_at else None,
+        "updated_at": _iso(f.updated_at) if f and f.updated_at else None,
         "exports": [_export_out(e) for e in exports],
         "status": _status(_get(st.assignment_id), st),
     }
@@ -687,3 +721,109 @@ def marks_csv(assignment_id: str, group: Optional[str] = None, s: Session = Depe
     name = f"{assignment_id}_{group or 'all'}_marks.csv"
     return Response("\ufeff" + out.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+# ---------------------------------------------------------------- redaction & design review
+
+def _redaction(st: Student, s: Session, refresh: bool = False) -> Redaction:
+    """Auto boxes are (re)computed when the poster file changes; manual boxes are kept."""
+    r = s.get(Redaction, st.id)
+    if r and r.pdf_sha256 == st.sha256 and not refresh:
+        return r
+    found = redact.find_boxes(_student_dir(st) / "submission.pdf", _deidentifier(st.assignment_id, s))
+    if not r:
+        r = Redaction(student_id=st.id, manual=[[] for _ in found["pages"]])
+        s.add(r)
+    r.auto, r.has_text, r.pdf_sha256 = found["pages"], found["has_text"], st.sha256
+    manual = list(r.manual or [])
+    r.manual = (manual + [[] for _ in found["pages"]])[:len(found["pages"])]
+    s.commit()
+    return r
+
+
+def _redaction_out(st: Student, r: Redaction) -> dict:
+    return {"pages": [{"page": i + 1, "auto": r.auto[i], "manual": r.manual[i],
+                       "original": f"/api/students/{st.id}/pages/{i + 1}.jpg"}
+                      for i in range(len(r.auto))],
+            "has_text": r.has_text}
+
+
+@app.get("/api/students/{student_id}/redaction")
+def get_redaction(student_id: int, s: Session = Depends(db)) -> dict:
+    st = _load(student_id, s)
+    return _redaction_out(st, _redaction(st, s))
+
+
+class RedactionUpdate(BaseModel):
+    manual: list[list[list[float]]]   # per page, list of [x0, y0, x1, y1] (0..1)
+
+
+@app.put("/api/students/{student_id}/redaction")
+def update_redaction(student_id: int, upd: RedactionUpdate, s: Session = Depends(db)) -> dict:
+    st = _load(student_id, s)
+    r = _redaction(st, s)
+    if len(upd.manual) != len(r.auto):
+        raise HTTPException(422, f"expected boxes for {len(r.auto)} page(s)")
+    for page in upd.manual:
+        for b in page:
+            if not redact.valid_box(b):
+                raise HTTPException(422, f"invalid box {b}")
+    r.manual = upd.manual
+    s.commit()
+    return _redaction_out(st, r)
+
+
+@app.post("/api/students/{student_id}/ai/design-review/preview")
+def preview_design_review(student_id: int, s: Session = Depends(db)) -> dict:
+    """Redact the poster image(s) locally and store the exact request. Nothing is sent."""
+    import base64
+    st = _load(student_id, s)
+    a = _get(st.assignment_id)
+    if not ai.image_dimensions(a):
+        raise HTTPException(422, "this assignment has no image-based criteria")
+    provider = settings.ai_task_design_review
+    try:
+        _, _, model = ai.provider_config(provider, "vision")
+    except ai.AIError as e:
+        raise HTTPException(422, str(e))
+    r = _redaction(st, s)
+    pdf = _student_dir(st) / "submission.pdf"
+    images = []
+    for i in range(len(r.auto)):
+        jpg = redact.render_redacted(pdf, i + 1, r.auto[i] + r.manual[i])
+        images.append(base64.b64encode(jpg).decode())
+    d = _deidentifier(st.assignment_id, s)
+    comment = d.deidentify(st.assessment.comment)
+    messages = ai.build_design_messages(a, comment.text, images)
+    blob = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+    boxes = sum(len(p) for p in r.auto) + sum(len(p) for p in r.manual)
+    warnings = []
+    if not r.has_text:
+        warnings.append("This poster is an image-only PDF: names could not be found automatically. "
+                        "Cover names, matric numbers and photos with boxes before sending, or untick the image.")
+    elif not any(r.auto):
+        warnings.append("No names were found on the poster automatically. Check the image and add boxes if needed.")
+    req = AIRequest(student_id=st.id, task="design_review", provider=provider, model=model,
+                    payload={"messages": messages}, payload_sha256=hashlib.sha256(blob.encode()).hexdigest(),
+                    replacements=len(comment.replacements) + boxes)
+    s.add(req)
+    s.commit()
+    shown, n = ai.strip_images(messages)
+    return {"request_id": req.id, "task": "design_review", "provider": provider, "model": model,
+            "messages": shown, "images": [f"/api/ai/requests/{req.id}/images/{k + 1}.jpg" for k in range(n)],
+            "replacements": req.replacements, "boxes": boxes, "has_text": r.has_text,
+            "warnings": warnings, "residuals": [],
+            "require_confirmation": settings.require_send_confirmation}
+
+
+@app.get("/api/ai/requests/{request_id}/images/{n}.jpg")
+def ai_request_image(request_id: int, n: int, s: Session = Depends(db)) -> Response:
+    """The exact image bytes stored in a request (what is, or was, sent)."""
+    req = s.get(AIRequest, request_id)
+    if not req:
+        raise HTTPException(404, "request not found")
+    try:
+        data = ai.image_bytes(req.payload["messages"], n)
+    except KeyError:
+        raise HTTPException(404, "image not found")
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})

@@ -24,9 +24,10 @@ Open <http://127.0.0.1:5173>. The backend API is at <http://127.0.0.1:8000/api/h
    each block, then *Apply to students*.
 3. Move between students with **← / →** (when not typing) or the student menu.
 4. Notes, comments and marks save automatically ("Saved" in the header).
-5. **✦ AI suggest marks** (needs `TOGETHER_API_KEY` and `TOGETHER_MODEL_TEXT` in `.env`):
-   review the de-identified request, send it, then *Use* individual AI marks or
-   *Use all AI marks*. Your own marks are always the ones that count.
+5. **✦ AI suggest marks** (needs `TOGETHER_API_KEY` and `TOGETHER_MODEL_TEXT` in `.env`;
+   `TOGETHER_MODEL_VISION` adds the poster image for the design criterion): review the
+   de-identified text and the redacted poster image (drag to black out more), send, then
+   *Use* individual AI marks or *Use all AI marks*. Your own marks are always the ones that count.
 6. **Feedback** tab (after all marks are entered): *✦ Draft with AI*, edit both sections, then
    *Approve & export PDF*. Every export is archived as a new version in
    `data/exports/<assignment>/<group>/`.

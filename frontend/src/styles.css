@@ -221,3 +221,25 @@ details summary { cursor: pointer; font-size: 13px; }
 }
 .menu-items a { padding: 6px 8px; border-radius: 5px; }
 .menu-items a:hover { background: var(--bg); }
+
+/* Review dialog: text + image side by side; redaction editor */
+.req-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; min-height: 0; }
+.req { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.req-head { font-size: 13px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.req-grid .payload { max-height: 58vh; }
+.redactor { display: flex; flex-direction: column; gap: 6px; }
+.redactor-bar { display: flex; align-items: center; gap: 6px; }
+.redactor-canvas {
+  position: relative; align-self: center; max-height: 58vh; overflow: auto;
+  border: 1px solid var(--border); border-radius: 6px; background: #fff;
+}
+.redactor-canvas img { display: block; max-height: 58vh; max-width: 100%; user-select: none; }
+.redactor-overlay { position: absolute; inset: 0; cursor: crosshair; }
+.rbox { position: absolute; background: #000; }
+.rbox.auto { outline: 1px dashed #ffb000; }
+.rbox.manual { outline: 1px solid #ff5a4f; }
+.rbox.temp { background: rgba(0,0,0,.55); outline: 1px dashed #ff5a4f; }
+.rbox-x {
+  position: absolute; top: -9px; right: -9px; width: 18px; height: 18px; padding: 0; line-height: 16px;
+  border-radius: 50%; background: #ff5a4f; color: #fff; border: none; font-size: 13px; cursor: pointer;
+}

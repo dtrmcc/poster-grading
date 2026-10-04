@@ -165,17 +165,36 @@ export default function App() {
     }
   };
 
-  // ---------- AI mark suggestion
-  const sendAi = async (preview) => {
-    setAiBusy(true); setAiError("");
+  // ---------- AI requests (text, plus a redacted poster image for design)
+  // aiPreview = { text, image, includeImage, imageError, studentId }
+  const [imageRefreshing, setImageRefreshing] = useState(false);
+
+  const previewImage = async (sid) => {
     try {
-      const d = await api(`/ai/requests/${preview.request_id}/send`, { method: "POST" });
+      const ip = await api(`/students/${sid}/ai/design-review/preview`, { method: "POST" });
+      return { image: ip, imageError: "" };
+    } catch (e) { return { image: null, imageError: `Poster image not included: ${e.message}` }; }
+  };
+
+  const sendAi = async (bundle) => {
+    setAiBusy(true); setAiError("");
+    let textSent = !!bundle.textSent;
+    try {
+      let d = null;
+      if (!textSent) {
+        d = await api(`/ai/requests/${bundle.text.request_id}/send`, { method: "POST" });
+        textSent = true;
+      }
+      if (bundle.image && bundle.includeImage) {
+        d = await api(`/ai/requests/${bundle.image.request_id}/send`, { method: "POST" });
+      }
       setStudent((cur) => (cur && cur.id === d.id ? d : cur));
       setAiPreview(null);
-      if (preview.task === "draft_feedback") setFeedbackKey((k) => k + 1);
+      if (bundle.text.task === "draft_feedback") setFeedbackKey((k) => k + 1);
     } catch (e) {
-      setAiError(e.message);
-      if (!preview.require_confirmation) setAiPreview(preview);
+      setAiError(textSent ? `The text suggestion arrived, but the image request failed: ${e.message}` : e.message);
+      setAiPreview({ ...bundle, textSent });
+      if (textSent) api(`/students/${bundle.studentId}`).then((d) => setStudent((cur) => (cur && cur.id === d.id ? d : cur)));
     } finally { setAiBusy(false); }
   };
 
@@ -185,11 +204,25 @@ export default function App() {
     setAiBusy(true);
     try {
       const path = kind === "feedback" ? "draft-feedback" : "suggest-marks";
-      const p = await api(`/students/${student.id}/ai/${path}/preview`, { method: "POST" });
-      if (p.require_confirmation || p.residuals.length) setAiPreview(p);
-      else await sendAi(p);
+      const text = await api(`/students/${student.id}/ai/${path}/preview`, { method: "POST" });
+      let bundle = { text, image: null, includeImage: false, imageError: "", studentId: student.id };
+      if (kind === "marks" && health?.vision_configured) {
+        const im = await previewImage(student.id);
+        bundle = { ...bundle, ...im, includeImage: !!im.image && (im.image.has_text || im.image.boxes > 0) };
+      }
+      // Always show the review when an image is involved: only a person can check the image.
+      if (text.require_confirmation || text.residuals.length || bundle.image) setAiPreview(bundle);
+      else await sendAi(bundle);
     } catch (e) { setError(e.message); }
     finally { setAiBusy(false); }
+  };
+
+  const refreshImage = async () => {
+    if (!aiPreview) return;
+    setImageRefreshing(true);
+    const im = await previewImage(aiPreview.studentId);
+    setAiPreview((cur) => (cur ? { ...cur, ...im, includeImage: !!im.image && cur.includeImage } : cur));
+    setImageRefreshing(false);
   };
 
   const aiDim = (id) => student?.ai_marks?.dimensions.find((d) => d.id === id);
@@ -406,7 +439,10 @@ export default function App() {
 
       {aiPreview && (
         <AIReviewDialog
-          preview={aiPreview}
+          bundle={aiPreview}
+          imageRefreshing={imageRefreshing}
+          onToggleImage={(v) => setAiPreview((cur) => ({ ...cur, includeImage: v }))}
+          onRedactionSaved={refreshImage}
           busy={aiBusy}
           error={aiError}
           onSend={() => sendAi(aiPreview)}

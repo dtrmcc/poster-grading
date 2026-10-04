@@ -1,6 +1,6 @@
 # Poster Grading — Design
 
-Status: v0.4 (stage 2 complete), 2026-10-03. Owner: Chen Qinghua (NIE/NTU).
+Status: v0.5 (stage 3 in progress), 2026-10-04. Owner: Chen Qinghua (NIE/NTU).
 
 ## 1. Purpose
 
@@ -52,9 +52,13 @@ anything that has not passed the de-identification gate.
    numbers are also caught by pattern (`U\d{7}[A-Z]`).
 2. **Local model sweep.** A local model scans the replaced text for remaining
    identifiers (other names, schools, personal details) and flags them for review.
-3. **Images.** Poster pages are rendered locally; the regions containing names/matric
-   numbers are located (PDF text positions, OCR fallback) and blacked out before any
-   image is sent. The redacted image is shown to the instructor.
+3. **Images.** Poster pages are rendered locally (long side 1600 px). Every place a
+   student's name (any variant, any classmate), matric number, e-mail or phone number
+   occurs in the PDF text layer is painted solid black on the raster. The instructor sees
+   the boxes in the review window and can draw more (photos, logos, image-only text);
+   automatic boxes cannot be removed. Image-only PDFs have no text layer: the image is
+   unticked by default until boxes are drawn. Boxes are stored per student
+   (`redaction` table, normalised coordinates) and recomputed when the poster changes.
 4. **Send confirmation.** With `REQUIRE_SEND_CONFIRMATION=true` the exact outbound
    payload is shown and must be approved. Can be relaxed to "only when the local sweep
    flags something".
@@ -152,7 +156,7 @@ Each task can be routed to `local`, `together` or `off` in `.env`.
 | Reference extraction (to structured fields) | local | errors are caught by the Crossref lookup |
 | Reference verification | no LLM for lookup | Crossref/OpenAlex/URL check; LLM compares metadata |
 | Mark suggestion | together | structured JSON output: mark, rationale, evidence |
-| Poster design review | together | redacted image only |
+| Poster design review | together (vision model) | redacted image + de-identified comments |
 | Feedback drafting | together | English, student-facing tone |
 
 Both providers use the OpenAI-compatible chat API, so switching is a base-URL change.
@@ -207,8 +211,12 @@ docker-compose.yml  local deployment (127.0.0.1 only)
     matching descriptor, both feedback sections, signature, full rubric on its own page with
     the student's bands shaded; every export kept as a new version in
     `data/exports/<assignment>/<group>/`; zip of latest PDFs and marks CSV per group)
-- **Stage 3** — poster-design review from redacted poster images (vision model);
-  reference checking; local-model de-identification sweep
+- **Stage 3**
+  - 3.1 poster-design review from redacted poster images (vision model) ✅ — sent together
+    with the text suggestion after one review; the image-based mark replaces the text-based
+    one for criteria whose evidence includes `poster_image`
+  - 3.2 reference checking
+  - 3.3 local-model de-identification sweep
 - **Stage 4** — run on the Mac as the daily tool; encrypted B2 backup/restore scripts
 - Later — other assignment types (essays, reports), multi-marker support, VPS deployment
 

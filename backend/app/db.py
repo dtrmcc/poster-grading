@@ -138,6 +138,20 @@ class Export(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
 
+class Redaction(Base):
+    """Boxes painted black on a student's poster image before it is sent to an AI model.
+    Normalised coordinates per page; `auto` comes from the PDF text layer, `manual`
+    from the instructor."""
+    __tablename__ = "redaction"
+
+    student_id: Mapped[int] = mapped_column(ForeignKey("student.id"), primary_key=True)
+    auto: Mapped[list] = mapped_column(JSON, default=list)       # [[box, …] per page]
+    manual: Mapped[list] = mapped_column(JSON, default=list)     # [[box, …] per page]
+    has_text: Mapped[bool] = mapped_column(default=True)
+    pdf_sha256: Mapped[str] = mapped_column(String(64), default="")
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
 class Database:
     def __init__(self, data_dir: Path):
         data_dir.mkdir(parents=True, exist_ok=True)
